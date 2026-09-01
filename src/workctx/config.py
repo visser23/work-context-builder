@@ -42,6 +42,8 @@ class SharePointSource(BaseModel):
     site_url: str | None = None
     mode: Literal["onedrive_local", "graph", "rclone", "browser"] = "onedrive_local"
     local_path: str | None = None
+    doc_library: str = "Shared Documents"
+    server_relative_path: str | None = None
     include: list[str] = Field(default_factory=lambda: ["**/*"])
     exclude: list[str] = Field(
         default_factory=lambda: ["**/~$*", "**/.DS_Store", "**/*.tmp"]
@@ -105,13 +107,16 @@ class ProjectConfig(BaseModel):
 
     @property
     def state_dir(self) -> Path:
-        return (
-            Path.home()
-            / "Library"
-            / "Application Support"
-            / "WorkContextMirror"
-            / self.project.id
-        )
+        import platform
+
+        system = platform.system()
+        if system == "Darwin":
+            base = Path.home() / "Library" / "Application Support"
+        elif system == "Windows":
+            base = Path.home() / "AppData" / "Local"
+        else:
+            base = Path.home() / ".local" / "share"
+        return base / "WorkContextMirror" / self.project.id
 
     @property
     def output_root_path(self) -> Path:

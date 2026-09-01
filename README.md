@@ -1,52 +1,97 @@
 # Work Context Mirror
 
-Lightweight macOS tool that creates and continuously maintains a local,
+Cross-platform tool that creates and continuously maintains a local,
 LLM-friendly mirror of work knowledge from Confluence, Jira, and
 SharePoint/OneDrive.
 
-Configure a project once, schedule a sync, and thereafter have an
-automatically refreshed body of project knowledge that ChatGPT, Codex,
-Claude Code, or similar tools can interrogate directly from the filesystem.
+Configure a project once, and a background daemon keeps an automatically
+refreshed body of project knowledge that ChatGPT, Codex, Claude Code,
+or similar tools can interrogate directly from the filesystem. Trigger
+syncs on-demand from Telegram or let the daemon handle it daily.
+
+**Supports:** macOS, Windows, Linux | Python 3.12+
 
 ## How It Works
 
 ```
 Confluence (Cloud / Data Center)
 Jira       (Cloud / Data Center)
-SharePoint (via local OneDrive sync)
-            │
-            ▼
+SharePoint (OneDrive sync or browser-based)
+            |
+            v
    Work Context Mirror
-   (incremental sync)
-            │
-            ▼
-   Clean Markdown corpus
+   (background daemon)
+            |
+            v
+   Clean Markdown corpus        <--- Telegram: /sync, /status
    with YAML front matter
-   (in OneDrive / local folder)
-            │
-     ┌──────┼──────┐
-     ▼      ▼      ▼
+            |
+     +------+------+
+     v      v      v
   ChatGPT  Codex  Claude
 ```
 
-- **Confluence** pages → individual Markdown files with metadata
-- **Jira** issues → Markdown files including comments, links, custom fields
-- **SharePoint** documents (Word, PDF, Excel) → converted Markdown
+- **Confluence** pages -> individual Markdown files with metadata
+- **Jira** issues -> Markdown files including comments, links, custom fields
+- **SharePoint** documents (Word, PDF, Excel, and 60+ formats) -> converted Markdown
+- Background daemon syncs daily and accepts Telegram commands
 - Only changed content is reprocessed on incremental syncs
-- Previous good versions are preserved if a conversion fails
+
+## First-Run Setup
+
+The easiest way to get started — run the setup script:
+
+### macOS / Linux
+
+```bash
+git clone https://github.com/visser23/work-context-builder.git
+cd work-context-builder
+bash setup.sh
+```
+
+### Windows (PowerShell)
+
+```powershell
+git clone https://github.com/visser23/work-context-builder.git
+cd work-context-builder
+.\setup.ps1
+```
+
+The setup script checks prerequisites, installs dependencies, walks you
+through configuration, validates the setup, and optionally runs the first
+sync and installs the background daemon.
+
+## Manual Installation
+
+### Prerequisites
+
+- Python 3.12 or later
+- [uv](https://docs.astral.sh/uv/) (recommended) or pip
+
+```bash
+git clone https://github.com/visser23/work-context-builder.git
+cd work-context-builder
+uv sync
+```
+
+### Optional dependencies
+
+```bash
+# SharePoint browser-based access (cookie capture)
+uv pip install playwright
+playwright install chromium
+
+# PDF conversion (included by default, but if missing)
+uv pip install pymupdf4llm
+```
 
 ## Quick Start
 
 ```bash
-# Clone and install
-git clone https://github.com/visser23/work-context-builder.git
-cd work-context-builder
-uv sync
-
 # Interactive setup (generates a YAML config)
 uv run workctx init
 
-# Store secrets in macOS Keychain
+# Store secrets in your OS credential store
 uv run workctx auth set my-confluence-pat
 uv run workctx auth set my-jira-pat
 
@@ -56,35 +101,70 @@ uv run workctx doctor --config workctx.yaml
 # First sync
 uv run workctx sync --config workctx.yaml --full
 
-# Schedule daily
-uv run workctx install-schedule --config workctx.yaml
+# Install background daemon (syncs daily, accepts Telegram commands)
+uv run workctx install-service --config workctx.yaml
 ```
+
+## Background Daemon
+
+The daemon runs as a persistent background service. It:
+
+- Syncs automatically once every 24 hours when the machine is on
+- Accepts Telegram commands (`/sync`, `/status`, `/help`)
+- Restarts automatically if the process crashes
+- Starts on login (no manual intervention needed)
+
+### Install the Service
+
+```bash
+uv run workctx install-service --config workctx.yaml
+```
+
+This installs a platform-appropriate background service:
+
+| Platform | Mechanism |
+|---|---|
+| macOS | launchd user agent (`KeepAlive`, `RunAtLoad`) |
+| Linux | systemd user service |
+| Windows | Task Scheduler at-logon trigger |
+
+### Manage the Service
+
+```bash
+uv run workctx service-status     # Check if running
+uv run workctx remove-service     # Stop and remove
+uv run workctx daemon             # Run in foreground (for debugging)
+```
+
+### Telegram Commands
+
+If Telegram is configured, send commands to your bot from any device:
+
+| Command | Action |
+|---|---|
+| `/sync` | Trigger incremental sync now |
+| `/syncfull` | Trigger full resync |
+| `/status` | Show last sync times and object counts |
+| `/help` | List available commands |
 
 ## Atlassian Authentication
 
-Work Context Mirror supports both **Atlassian Cloud** and **Data Center**
-instances. The authentication method depends on your deployment type.
+Supports both **Atlassian Cloud** and **Data Center** instances.
 
 ### Cloud (*.atlassian.net)
 
 Uses API tokens with Basic Auth.
 
 1. Go to <https://id.atlassian.com/manage-profile/security/api-tokens>
-2. Click **Create API token** → copy it
-3. Store it:
-
-```bash
-uv run workctx auth set my-cloud-token
-```
-
-Config:
+2. Click **Create API token** -> copy it
+3. Store it: `uv run workctx auth set my-cloud-token`
 
 ```yaml
 sources:
   confluence:
     - name: my-wiki
       base_url: "https://myorg.atlassian.net"
-      deployment: cloud          # or "auto" (default)
+      deployment: cloud
       spaces: [ENG, OPS]
       auth:
         mode: api_token
@@ -96,23 +176,16 @@ sources:
 
 Uses Personal Access Tokens (PATs) with Bearer auth. No username required.
 
-1. In your DC instance, go to **Profile → Personal Access Tokens**
-2. Create a token with read permissions → copy it
-3. Store it:
-
-```bash
-uv run workctx auth set my-dc-confluence-pat
-uv run workctx auth set my-dc-jira-pat
-```
-
-Config:
+1. Go to **Profile -> Personal Access Tokens** in your DC instance
+2. Create a token with read permissions -> copy it
+3. Store it: `uv run workctx auth set my-dc-pat`
 
 ```yaml
 sources:
   confluence:
     - name: my-dc-wiki
       base_url: "https://confluence.myorg.com"
-      deployment: datacenter     # or "auto" — auto-detects DC
+      deployment: datacenter
       spaces: [PROJ, TEAM]
       auth:
         mode: pat
@@ -131,77 +204,81 @@ sources:
 
 ### Auto-Detection
 
-When `deployment` is set to `"auto"` (the default), Work Context Mirror
-probes the instance to determine Cloud vs. Data Center:
+When `deployment` is `"auto"` (default), the tool probes the instance
+and detects Cloud vs. Data Center automatically. For reliability, set
+`deployment: datacenter` or `deployment: cloud` explicitly.
 
-- URLs containing `.atlassian.net` → Cloud
-- Successful Bearer-token auth against `/rest/api/2` → Data Center
-- Fallback to Cloud-style Basic Auth if both fail
+## SharePoint
 
-For reliability, explicitly setting `deployment: datacenter` or
-`deployment: cloud` is recommended.
+Two modes are supported.
 
-## SharePoint / OneDrive Setup
+### Mode 1: OneDrive Local Sync (zero config)
 
-Work Context Mirror reads SharePoint through the **official OneDrive
-macOS client**. No Microsoft admin or Entra application registration
-required.
-
-### Steps
-
-1. Sign into OneDrive on your Mac with your work account
-2. In SharePoint, navigate to the document library
-3. Click **Sync** or **Add shortcut to OneDrive**
-4. Note the resulting local path (usually under `~/Library/CloudStorage/OneDrive-YourOrg/`)
-5. Use that path as `local_path` in your config
-
-### Finding the Local Path
-
-```bash
-ls ~/Library/CloudStorage/
-# Look for your organisation's OneDrive folder
-```
-
-### Config
+If the document library is synced to your machine via OneDrive:
 
 ```yaml
 sources:
   sharepoint:
     - name: team-docs
       mode: onedrive_local
-      local_path: "~/Library/CloudStorage/OneDrive-YourOrg/SharedDocs"
-      include: ["**/*"]
-      exclude: ["**/~$*", "**/.DS_Store", "**/*.tmp"]
+      local_path: "~/Library/CloudStorage/OneDrive-YourOrg/SharedDocs"   # macOS
+      # local_path: "C:/Users/you/OneDrive - YourOrg/SharedDocs"        # Windows
 ```
 
-### Limitations
+### Mode 2: Browser-Based (no local sync needed)
 
-The `onedrive_local` mode only works when the SharePoint library is
-synced to the local machine via OneDrive. If the library is not synced,
-browser-based access is planned for a future release.
+For SharePoint libraries not synced locally. Uses Playwright to capture
+session cookies, then calls SharePoint's REST API. On each sync, the
+daemon refreshes cookies headlessly via the persisted browser profile.
+
+**No Microsoft app registration or admin consent required.**
+
+```yaml
+sources:
+  sharepoint:
+    - name: team-sharepoint
+      site_url: "https://company.sharepoint.com/sites/TeamSite"
+      mode: browser
+      doc_library: "Shared Documents"
+      server_relative_path: "/sites/TeamSite/Shared Documents/SubFolder"
+      auth:
+        mode: browser
+        secret_ref: sp-cookies
+```
+
+First login: `uv run workctx auth login-sharepoint --source team-sharepoint`
+
+## Supported File Types
+
+Work Context Mirror converts 60+ file formats to Markdown:
+
+| Category | Extensions |
+|---|---|
+| Office | `.docx`, `.doc`, `.pptx`, `.ppt`, `.xlsx`, `.xls`, `.xlsm`, `.xlsb`, `.rtf` |
+| PDF | `.pdf` |
+| Email | `.msg`, `.eml` |
+| Web | `.html`, `.htm`, `.mhtml`, `.mht` |
+| Structured data | `.csv`, `.tsv`, `.json`, `.jsonl`, `.xml` |
+| Books / notebooks | `.epub`, `.ipynb` |
+| Archives | `.zip` (contents extracted and converted) |
+| Code (50+) | `.py`, `.js`, `.ts`, `.java`, `.go`, `.rs`, `.c`, `.cpp`, `.cs`, `.rb`, `.php`, `.swift`, `.sql`, `.sh`, `.ps1`, and many more |
+| Markup / docs | `.md`, `.rst`, `.adoc`, `.tex`, `.wiki` |
+| Config | `.yaml`, `.toml`, `.ini`, `.env`, `.tf`, `.hcl`, `.dockerfile` |
+
+Unknown text files are auto-detected via heuristic. Binary files that
+cannot be converted produce a metadata-only stub with a link to the original.
 
 ## Telegram Notifications
 
-Optional alerts for sync completions, failures, and recoveries.
-
-### Setup
-
-1. Message [@BotFather](https://t.me/BotFather) on Telegram → `/newbot`
+1. Message [@BotFather](https://t.me/BotFather) on Telegram -> `/newbot`
 2. Copy the bot token
-3. Start a chat with your new bot (send any message)
+3. Start a chat with your new bot and send any message
 4. Get your chat ID from `https://api.telegram.org/bot<TOKEN>/getUpdates`
-
-### Store Credentials
 
 ```bash
 uv run workctx auth set telegram-bot-token
-# Paste the bot token
-
 uv run workctx auth set telegram-chat-id
-# Paste the chat ID
 ```
-
-### Config
 
 ```yaml
 notifications:
@@ -209,41 +286,17 @@ notifications:
     enabled: true
     bot_token_ref: telegram-bot-token
     chat_id_ref: telegram-chat-id
-  macos:
-    enabled: true
 ```
 
-## Configuration Reference
+## Secret Storage
 
-Full example: [`example-config.yaml`](example-config.yaml)
+| Platform | Backend |
+|---|---|
+| macOS | Keychain |
+| Windows | Windows Credential Locker |
+| Linux | Secret Service (GNOME Keyring / KWallet) |
 
-```yaml
-version: 1
-
-project:
-  id: my-project                    # Unique ID, used for state directory
-  name: "My Project"                # Human-readable name
-  output_root: "~/path/to/output"   # Where Markdown files are written
-
-schedule:
-  hour: 6                           # Daily sync hour (24h)
-  minute: 0
-
-sync:
-  overlap_minutes: 15               # Re-check window to catch late changes
-  reconciliation_days: 7            # Days between full deletion sweeps
-  max_concurrency: 4
-  large_document_chars: 300000      # Split threshold for huge docs
-
-sources:
-  confluence: [...]
-  jira: [...]
-  sharepoint: [...]
-
-notifications:
-  telegram: { enabled: true, bot_token_ref: "...", chat_id_ref: "..." }
-  macos: { enabled: true }
-```
+Environment variable fallback: `my-jira-pat` -> `MY_JIRA_PAT`.
 
 ## CLI Reference
 
@@ -252,87 +305,53 @@ notifications:
 | `workctx init` | Interactive config generator |
 | `workctx doctor` | Validate config and environment |
 | `workctx sync` | Run incremental sync |
-| `workctx sync --dry-run` | Preview without modifying |
 | `workctx sync --full` | Force full resync |
-| `workctx status` | Show project and sync status |
+| `workctx status` | Show sync status |
 | `workctx search "query"` | Full-text search the corpus |
-| `workctx reconcile` | Force deletion reconciliation |
-| `workctx reindex` | Rebuild FTS5 search index |
-| `workctx auth set <ref>` | Store a secret in Keychain |
+| `workctx daemon` | Run daemon in foreground |
+| `workctx install-service` | Install background daemon |
+| `workctx remove-service` | Remove background daemon |
+| `workctx service-status` | Check daemon status |
+| `workctx auth set <ref>` | Store a secret |
 | `workctx auth remove <ref>` | Remove a secret |
-| `workctx install-schedule` | Install launchd daily schedule |
-| `workctx remove-schedule` | Remove the schedule |
-| `workctx schedule-status` | Check scheduler status |
-
-All commands accept `--config <path>` to specify the YAML config file.
+| `workctx auth login-sharepoint` | Browser login for SharePoint |
+| `workctx install-schedule` | Legacy: fixed-time launchd schedule |
 
 ## Output Structure
 
 ```
 OutputRoot/
-├── README.md             # Auto-generated corpus overview
-├── CONTEXT.md            # Corpus explanation for humans & LLMs
-├── AGENTS.md             # Instructions for Codex-style agents
-├── CLAUDE.md             # Instructions for Claude Code
-├── _meta/
-│   ├── INDEX.md          # Source overview with counts
-│   ├── health.json       # Sync health status
-│   └── manifest.jsonl    # Per-document metadata
-├── confluence/
-│   └── <source-name>/
-│       └── <SPACE>/
-│           └── <id>-<page-title>.md
-├── jira/
-│   └── <source-name>/
-│       └── <PROJECT>/
-│           └── <PROJ-123>.md
-└── sharepoint/
-    └── <source-name>/
-        └── <path>/
-            └── <document>.md
-```
-
-Each Markdown file includes YAML front matter:
-
-```yaml
----
-source_type: confluence
-source_name: my-wiki
-source_id: "12345"
-title: "Architecture Overview"
-source_url: "https://confluence.example.com/pages/viewpage.action?pageId=12345"
-space: ENG
-source_version: "42"
-updated_at: "2026-08-15T10:30:00+00:00"
-synced_at: "2026-09-01T06:00:12+00:00"
----
++-- README.md             # Auto-generated corpus overview
++-- CONTEXT.md            # Corpus explanation for humans & LLMs
++-- AGENTS.md             # For Codex-style agents
++-- CLAUDE.md             # For Claude Code
++-- _meta/
+|   +-- INDEX.md          # Source overview with counts
+|   +-- health.json       # Sync health status
+|   +-- manifest.jsonl    # Per-document metadata
++-- confluence/<source>/<SPACE>/<page>.md
++-- jira/<source>/<PROJECT>/<PROJ-123>.md
++-- sharepoint/<source>/<path>/<document>.md
 ```
 
 ## State & Logs
 
-Runtime state is stored locally (not in the output directory):
-
-```
-~/Library/Application Support/WorkContextMirror/<project-id>/
-├── state.sqlite       # Sync state, checkpoints, FTS5 index
-├── logs/              # Rotating log files
-├── tmp/               # Temp files during conversion
-└── run.lock           # Execution lock
-```
+| Platform | Path |
+|---|---|
+| macOS | `~/Library/Application Support/WorkContextMirror/<project-id>/` |
+| Windows | `%LOCALAPPDATA%\WorkContextMirror\<project-id>\` |
+| Linux | `~/.local/share/WorkContextMirror/<project-id>/` |
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| Config file not found | Use `--config /path/to/config.yaml` |
-| No API token found | `workctx auth set <secret_ref>` |
-| Another sync is running | Delete stale `run.lock` if process crashed |
-| SharePoint path missing | Ensure OneDrive sync is active: `ls ~/Library/CloudStorage/` |
-| Confluence 401 | Check PAT hasn't expired; regenerate in DC profile settings |
-| Jira timeout on DC | Jira DC can be slow on large searches; first sync takes longest |
-| PDF conversion issues | `uv pip install pymupdf4llm` |
-
-Run comprehensive diagnostics:
+| Config not found | `--config /path/to/config.yaml` |
+| No API token | `workctx auth set <secret_ref>` |
+| Lock file stale | Delete `run.lock` in state dir |
+| Confluence 401 | Regenerate PAT |
+| SharePoint expired | `workctx auth login-sharepoint --source <name>` |
+| Daemon not running | `workctx service-status` then `workctx install-service` |
 
 ```bash
 uv run workctx doctor --config workctx.yaml --verbose
@@ -340,33 +359,22 @@ uv run workctx doctor --config workctx.yaml --verbose
 
 ## Security Notes
 
-- Secrets are stored in **macOS Keychain only** — never in config files or logs
-- All document processing happens **locally** — nothing sent to external services
-- Source systems are accessed **read-only**
-- A `SecretFilter` strips any token patterns from log output
+- Secrets stored in **OS credential store only** -- never in config files or logs
+- All processing happens **locally** -- nothing sent to external services
+- Source systems accessed **read-only**
+- SharePoint cookies encrypted in OS credential store
 
 **Important:** Synchronising organisational information into a locally
-controlled directory may be restricted by your employer. Ensure the
-chosen storage location complies with organisational
-information-governance requirements.
+controlled directory may be restricted by your employer. Ensure
+compliance with information-governance requirements.
 
 ## Development
 
 ```bash
-# Install dev dependencies
 uv sync --extra dev
-
-# Run tests
-uv run pytest
-
-# Run with coverage
-uv run pytest --cov=workctx
-
-# Lint
-uv run ruff check src/ tests/
-
-# Type-check
-uv run mypy src/
+uv run pytest                    # 105+ tests
+uv run ruff check src/ tests/   # Lint
+uv run mypy src/                 # Type-check
 ```
 
 ## License

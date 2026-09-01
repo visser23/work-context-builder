@@ -8,22 +8,18 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS = {
-    ".docx",
-    ".doc",
-    ".pptx",
-    ".ppt",
-    ".xlsx",
-    ".xls",
-    ".csv",
-    ".tsv",
-    ".html",
-    ".htm",
+    ".docx", ".doc",
+    ".pptx", ".ppt",
+    ".xlsx", ".xls", ".xlsm", ".xlsb",
+    ".csv", ".tsv",
+    ".html", ".htm", ".mhtml", ".mht",
     ".rtf",
-    ".msg",
-    ".eml",
-    ".json",
+    ".msg", ".eml",
+    ".json", ".jsonl",
     ".xml",
     ".zip",
+    ".epub",
+    ".ipynb",
 }
 
 _converter = None

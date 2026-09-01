@@ -46,16 +46,31 @@ sources:
       include_attachments: false
 
   sharepoint:
+    # Option A: OneDrive local sync (if library is synced to machine)
     - name: "programme-documents"
       site_url: "https://tenant.sharepoint.com/sites/ProgrammeAlpha"
       mode: "onedrive_local"
       local_path: "~/Library/CloudStorage/OneDrive-Company/Programme Alpha/Documents"
+      # Windows: "C:/Users/you/OneDrive - Company/Programme Alpha/Documents"
       include:
         - "**/*"
       exclude:
         - "**/~$*"
         - "**/.DS_Store"
         - "**/*.tmp"
+
+    # Option B: Browser-based (no local sync needed)
+    - name: "team-sharepoint"
+      site_url: "https://tenant.sharepoint.com/sites/TeamSite"
+      mode: "browser"
+      doc_library: "Shared Documents"
+      server_relative_path: "/sites/TeamSite/Shared Documents/SubFolder"
+      include: ["**/*"]
+      exclude: ["**/~$*", "**/.DS_Store", "**/*.tmp"]
+      auth:
+        mode: browser
+        secret_ref: "sp-cookies"
+      # First run: workctx auth login-sharepoint --source team-sharepoint
 
 notifications:
 

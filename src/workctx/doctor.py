@@ -128,6 +128,10 @@ def run_doctor(config_path: Path, *, verbose: bool = False) -> bool:
                     fail(f"Local path does not exist: {local}")
             else:
                 fail("local_path not configured")
+        elif sp.mode == "browser":
+            ok(f"Site URL: {sp.site_url}")
+            ok(f"Doc library: {sp.doc_library}")
+            _check_sharepoint_browser(sp, ok, fail, warn)
         else:
             warn(f"Mode '{sp.mode}' — advanced configuration")
 
@@ -294,3 +298,64 @@ def _check_confluence_connection(
             continue
 
     fail("Confluence authentication failed — check token and base URL")
+
+
+def _check_sharepoint_browser(sp_config, ok, fail, warn) -> None:
+    """Test SharePoint browser-mode connectivity."""
+    try:
+        from playwright.sync_api import sync_playwright  # noqa: F401
+
+        ok("Playwright available")
+    except ImportError:
+        fail(
+            "Playwright not installed. Run: "
+            "uv pip install playwright && playwright install chromium"
+        )
+
+    from workctx.auth.sharepoint import get_profile_dir, load_cookies
+
+    secret_ref = sp_config.auth.secret_ref if sp_config.auth else None
+    if not secret_ref:
+        fail("auth.secret_ref not configured")
+        return
+
+    cookies = load_cookies(secret_ref)
+    if cookies:
+        ok("SharePoint cookies found in Keychain")
+
+        import httpx
+
+        cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        site_url = (sp_config.site_url or "").rstrip("/")
+        try:
+            resp = httpx.get(
+                f"{site_url}/_api/web/title",
+                headers={
+                    "Cookie": cookie_header,
+                    "Accept": "application/json;odata=verbose",
+                },
+                timeout=15.0,
+                follow_redirects=False,
+            )
+            if resp.status_code == 200:
+                ok("SharePoint session valid")
+            elif resp.status_code in (401, 403):
+                warn(
+                    "SharePoint session expired. "
+                    "Run: workctx auth login-sharepoint"
+                )
+            else:
+                warn(f"SharePoint returned HTTP {resp.status_code}")
+        except Exception as e:
+            warn(f"SharePoint connectivity check failed: {e}")
+    else:
+        warn(
+            "No SharePoint cookies — run: "
+            f"workctx auth login-sharepoint --source {sp_config.name}"
+        )
+
+    profile_dir = get_profile_dir(sp_config.name)
+    if any(profile_dir.iterdir()):
+        ok(f"Browser profile exists: {profile_dir}")
+    else:
+        warn(f"No browser profile yet: {profile_dir}")
