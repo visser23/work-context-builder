@@ -120,12 +120,15 @@ def _build_sources(config: ProjectConfig) -> list[Source]:
     from workctx.sources.confluence import ConfluenceAdapter
     from workctx.sources.jira import JiraAdapter
     from workctx.sources.sharepoint import SharePointLocalSource
+    from workctx.sources.sharepoint_web import SharePointWebSource
 
     sources: list[Source] = []
 
     for sp_config in config.sources.sharepoint:
         if sp_config.mode == "onedrive_local":
             sources.append(SharePointLocalSource(sp_config))
+        elif sp_config.mode == "browser":
+            sources.append(SharePointWebSource(sp_config))
 
     for jira_config in config.sources.jira:
         sources.append(JiraAdapter(jira_config))
@@ -238,6 +241,7 @@ def _handle_upsert(
 ) -> None:
     """Process an add or update change."""
     body_md: str | None = None
+    is_stub = False
 
     if change.content_text:
         body_md = change.content_text
@@ -245,8 +249,11 @@ def _handle_upsert(
         body_md = _convert_local_file(Path(change.local_path))
     elif change.content:
         body_md = change.content.decode("utf-8", errors="replace")
+    elif source.source_type == SourceType.SHAREPOINT and hasattr(source, "download_file"):
+        body_md = _download_and_convert(source, change)
 
     if not body_md:
+        is_stub = True
         body_md = (
             _make_unsupported_stub(change) if change.local_path
             else _make_empty_stub(change)
@@ -332,8 +339,10 @@ def _handle_upsert(
         file_size=change.file_size,
         file_mtime=change.file_mtime,
         last_processed_at=now,
-        last_error=None,
-        retry_count=0,
+        last_error="stub:conversion_failed" if is_stub else None,
+        retry_count=0 if not is_stub else (
+            (existing.retry_count + 1) if existing else 1
+        ),
     )
     db.upsert_object(obj)
 
@@ -400,13 +409,61 @@ def _convert_local_file(file_path: Path) -> str | None:
         return convert_office(file_path)
 
     suffix = file_path.suffix.lower()
-    if suffix in (".md", ".txt", ".text", ".log", ".cfg", ".ini", ".yaml", ".yml", ".toml"):
+    if suffix in _TEXT_EXTENSIONS:
         try:
             return file_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return None
 
+    result = convert_office(file_path)
+    if result:
+        return result
+
+    if _looks_like_text(file_path):
+        try:
+            return file_path.read_text(encoding="utf-8", errors="replace")
+        except (OSError, UnicodeDecodeError):
+            return None
+
     return None
+
+
+_TEXT_EXTENSIONS = {
+    ".md", ".markdown", ".txt", ".text", ".log", ".cfg", ".ini",
+    ".yaml", ".yml", ".toml", ".conf", ".config", ".properties",
+    ".env", ".editorconfig", ".gitignore", ".dockerignore",
+    ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    ".java", ".kt", ".kts", ".scala", ".groovy", ".gradle",
+    ".c", ".h", ".cpp", ".hpp", ".cc", ".cxx", ".cs", ".fs",
+    ".go", ".rs", ".rb", ".php", ".swift", ".m", ".mm",
+    ".r", ".R", ".jl", ".lua", ".pl", ".pm", ".ex", ".exs",
+    ".sql", ".ddl", ".dml",
+    ".sh", ".bash", ".zsh", ".fish", ".bat", ".cmd", ".ps1", ".psm1",
+    ".css", ".scss", ".less", ".sass",
+    ".tf", ".hcl", ".json5", ".graphql", ".gql", ".proto",
+    ".makefile", ".mk", ".cmake",
+    ".rst", ".adoc", ".asciidoc", ".tex", ".bib", ".wiki",
+    ".dockerfile", ".containerfile",
+    ".vue", ".svelte", ".astro",
+}
+
+
+def _looks_like_text(file_path: Path) -> bool:
+    """Heuristic: read first 8KB and check if it looks like text."""
+    try:
+        with open(file_path, "rb") as f:
+            chunk = f.read(8192)
+        if not chunk:
+            return True
+        if b"\x00" in chunk:
+            return False
+        try:
+            chunk.decode("utf-8")
+            return True
+        except UnicodeDecodeError:
+            return False
+    except OSError:
+        return False
 
 
 def _make_unsupported_stub(change: DiscoveredChange) -> str:
@@ -441,6 +498,21 @@ def _make_empty_stub(change: DiscoveredChange) -> str:
     if change.source_key:
         lines.append(f"- **Key**: {change.source_key}")
     return "\n".join(lines)
+
+
+def _download_and_convert(source: Source, change: DiscoveredChange) -> str | None:
+    """Download a file from SharePoint web source and convert to Markdown."""
+    import contextlib
+    import os
+
+    tmp_path = source.download_file(change.source_id)
+    if not tmp_path:
+        return None
+    try:
+        return _convert_local_file(tmp_path)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
 
 
 def _should_reconcile(checkpoint: SyncCheckpoint | None, days: int) -> bool:

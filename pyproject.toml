@@ -13,7 +13,7 @@ dependencies = [
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "keyring>=25.0",
-    "markitdown>=0.1",
+    "markitdown[all]>=0.1",
     "pymupdf4llm>=0.0.17",
     "rich>=13.7",
 ]

@@ -241,6 +241,50 @@ def auth_remove(secret_ref: str) -> None:
     console.print(f"[green]Secret removed: {secret_ref}[/green]")
 
 
+@auth.command("login-sharepoint")
+@click.option("--config", "-c", type=str, default=None)
+@click.option("--source", "-s", type=str, required=True, help="SharePoint source name")
+@click.option("--headless", is_flag=True, help="Run headless (for testing)")
+def auth_login_sharepoint(config: str | None, source: str, headless: bool) -> None:
+    """Open browser for SharePoint login and capture session cookies."""
+    from workctx.auth.sharepoint import interactive_login
+    from workctx.config import load_config
+
+    cfg = load_config(_find_config(config))
+    sp_config = None
+    for sp in cfg.sources.sharepoint:
+        if sp.name == source:
+            sp_config = sp
+            break
+
+    if not sp_config:
+        console.print(f"[red]SharePoint source '{source}' not found in config.[/red]")
+        sys.exit(1)
+    if not sp_config.site_url:
+        console.print(f"[red]site_url not configured for '{source}'.[/red]")
+        sys.exit(1)
+    if not sp_config.auth or not sp_config.auth.secret_ref:
+        console.print(f"[red]auth.secret_ref not configured for '{source}'.[/red]")
+        sys.exit(1)
+
+    console.print(f"Opening browser for [bold]{sp_config.site_url}[/bold]...")
+    console.print("Complete authentication in the browser window.")
+
+    try:
+        cookies = interactive_login(
+            sp_config.site_url,
+            source,
+            sp_config.auth.secret_ref,
+            headless=headless,
+        )
+        console.print(
+            f"[green]Cookies captured: {', '.join(cookies.keys())}[/green]"
+        )
+    except Exception as e:
+        console.print(f"[red]Login failed: {e}[/red]")
+        sys.exit(1)
+
+
 @main.command("install-schedule")
 @click.option("--config", "-c", type=str, default=None)
 def install_schedule(config: str | None) -> None:
@@ -292,3 +336,61 @@ def init() -> None:
     from workctx.init_config import interactive_init
 
     interactive_init()
+
+
+@main.command()
+@click.option("--config", "-c", type=str, default=None)
+def daemon(config: str | None) -> None:
+    """Run as a background daemon (daily sync + Telegram commands)."""
+    from workctx.daemon import run_daemon
+
+    config_path = str(_find_config(config))
+    console.print("[bold]Work Context Mirror — Daemon Mode[/bold]")
+    console.print("Press Ctrl+C to stop.\n")
+    run_daemon(config_path)
+
+
+@main.command("install-service")
+@click.option("--config", "-c", type=str, default=None)
+def install_service_cmd(config: str | None) -> None:
+    """Install the daemon as a background service (auto-start on login)."""
+    from workctx.config import load_config
+    from workctx.scheduler import install_service
+
+    cfg = load_config(_find_config(config))
+    config_path = _find_config(config)
+    result = install_service(cfg, config_path)
+    console.print(f"[green]Service installed: {result}[/green]")
+    console.print("The daemon will start automatically on login and sync daily.")
+    console.print("Telegram commands: /sync, /status, /help")
+
+
+@main.command("remove-service")
+@click.option("--config", "-c", type=str, default=None)
+def remove_service_cmd(config: str | None) -> None:
+    """Remove the background daemon service."""
+    from workctx.config import load_config
+    from workctx.scheduler import remove_service
+
+    cfg = load_config(_find_config(config))
+    remove_service(cfg)
+    console.print("[green]Service removed.[/green]")
+
+
+@main.command("service-status")
+@click.option("--config", "-c", type=str, default=None)
+def service_status_cmd(config: str | None) -> None:
+    """Show background daemon service status."""
+    from workctx.config import load_config
+    from workctx.scheduler import get_service_status
+
+    cfg = load_config(_find_config(config))
+    info = get_service_status(cfg)
+    if info.get("installed"):
+        console.print(f"[green]Service installed[/green] ({info.get('platform', '?')})")
+        for k, v in info.items():
+            if k not in ("installed", "platform"):
+                console.print(f"  {k}: {v}")
+    else:
+        console.print("[yellow]No service installed.[/yellow]")
+        console.print("Run: workctx install-service")
