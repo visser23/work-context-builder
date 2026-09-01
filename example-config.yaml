@@ -1,0 +1,68 @@
+version: 1
+
+project:
+  id: "programme-alpha"
+  name: "Programme Alpha"
+  output_root: "~/Library/CloudStorage/OneDrive-Company/WorkContext/ProgrammeAlpha"
+
+schedule:
+  hour: 5
+  minute: 30
+
+sync:
+  overlap_minutes: 15
+  reconciliation_days: 7
+  max_concurrency: 4
+  large_document_chars: 300000
+
+sources:
+
+  confluence:
+    - name: "programme-wiki"
+      base_url: "https://company.atlassian.net"
+      deployment: "auto"
+      spaces:
+        - "ALPHA"
+        - "ARCH"
+      auth:
+        mode: "api_token"
+        username: "user@company.com"
+        secret_ref: "workctx/programme-alpha/confluence"
+      include_attachments: false
+
+  jira:
+    - name: "programme-jira"
+      base_url: "https://company.atlassian.net"
+      deployment: "auto"
+      projects:
+        - "ALPHA"
+        - "ARCH"
+      auth:
+        mode: "api_token"
+        username: "user@company.com"
+        secret_ref: "workctx/programme-alpha/jira"
+      include_comments: true
+      include_changelog: false
+      include_attachments: false
+
+  sharepoint:
+    - name: "programme-documents"
+      site_url: "https://tenant.sharepoint.com/sites/ProgrammeAlpha"
+      mode: "onedrive_local"
+      local_path: "~/Library/CloudStorage/OneDrive-Company/Programme Alpha/Documents"
+      include:
+        - "**/*"
+      exclude:
+        - "**/~$*"
+        - "**/.DS_Store"
+        - "**/*.tmp"
+
+notifications:
+
+  telegram:
+    enabled: true
+    bot_token_ref: "workctx/telegram/bot"
+    chat_id_ref: "workctx/telegram/chat"
+
+  macos:
+    enabled: true
