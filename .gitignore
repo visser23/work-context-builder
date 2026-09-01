@@ -1,0 +1,41 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+.venv/
+venv/
+env/
+
+.env
+.env.local
+
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+*.log
+
+.DS_Store
+Thumbs.db
+
+# Browser state (Playwright)
+auth/
+
+# Temp conversion files
+tmp/
+
+# Real project configs (contain instance-specific settings)
+workctx.yaml
+*.workctx.yaml
