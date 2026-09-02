@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -43,6 +44,8 @@ from workctx.sources.base import Source
 from workctx.state import StateDB
 
 logger = logging.getLogger(__name__)
+
+MAX_SYNC_WORKERS = 6
 
 
 def run_sync(
@@ -223,15 +226,65 @@ def _sync_source(
         latest_success_ts: str | None = None
         earliest_failure_ts: str | None = None
 
-        for change in changes:
+        # Separate deletes (must be serial) from upserts (can be parallel)
+        deletes = [c for c in changes if c.action == ChangeAction.DELETE]
+        upserts = [c for c in changes if c.action != ChangeAction.DELETE]
+
+        for change in deletes:
             try:
-                if change.action == ChangeAction.DELETE:
-                    _handle_delete(source, change, db, idx, output_root)
-                    sr.objects_deleted += 1
+                _handle_delete(source, change, db, idx, output_root)
+                sr.objects_deleted += 1
+                if progress:
+                    progress.advance(source.name, deleted=1)
+                if change.source_updated_at:
+                    ts = change.source_updated_at.isoformat()
+                    if latest_success_ts is None or ts > latest_success_ts:
+                        latest_success_ts = ts
+            except Exception as e:
+                sr.objects_failed += 1
+                sr.errors.append(f"{change.source_id}: {e}")
+                if progress:
+                    progress.advance(source.name, failed=1)
+                logger.error("Failed to delete %s/%s: %s", source.name, change.source_id, e)
+
+        # Process upserts concurrently: download+convert in threads,
+        # then serialize DB writes as results come in.
+        def _process_one(
+            change: DiscoveredChange,
+        ) -> tuple[DiscoveredChange, str | None, bool, Exception | None]:
+            try:
+                body_md, is_stub = _fetch_and_convert(source, change)
+                return (change, body_md, is_stub, None)
+            except Exception as exc:
+                return (change, None, True, exc)
+
+        with ThreadPoolExecutor(max_workers=MAX_SYNC_WORKERS) as pool:
+            futures = {pool.submit(_process_one, c): c for c in upserts}
+            for future in as_completed(futures):
+                change, body_md, is_stub, exc = future.result()
+                if exc:
+                    if change.source_updated_at:
+                        ts = change.source_updated_at.isoformat()
+                        if earliest_failure_ts is None or ts < earliest_failure_ts:
+                            earliest_failure_ts = ts
+                    sr.objects_failed += 1
+                    sr.errors.append(f"{change.source_id}: {exc}")
                     if progress:
-                        progress.advance(source.name, deleted=1)
-                else:
-                    _handle_upsert(source, change, config, db, idx, output_root)
+                        progress.advance(source.name, failed=1)
+                    logger.error(
+                        "Failed to process %s/%s: %s",
+                        source.name,
+                        change.source_id,
+                        exc,
+                        exc_info=True,
+                    )
+                    continue
+
+                try:
+                    _write_and_index(
+                        source, change, config, db, idx, output_root,
+                        body_md, is_stub,
+                    )
                     if change.action == ChangeAction.ADD:
                         sr.objects_added += 1
                         if progress:
@@ -241,27 +294,27 @@ def _sync_source(
                         if progress:
                             progress.advance(source.name, updated=1)
 
-                if change.source_updated_at:
-                    ts = change.source_updated_at.isoformat()
-                    if latest_success_ts is None or ts > latest_success_ts:
-                        latest_success_ts = ts
+                    if change.source_updated_at:
+                        ts = change.source_updated_at.isoformat()
+                        if latest_success_ts is None or ts > latest_success_ts:
+                            latest_success_ts = ts
 
-            except Exception as e:
-                if change.source_updated_at:
-                    ts = change.source_updated_at.isoformat()
-                    if earliest_failure_ts is None or ts < earliest_failure_ts:
-                        earliest_failure_ts = ts
-                sr.objects_failed += 1
-                sr.errors.append(f"{change.source_id}: {e}")
-                if progress:
-                    progress.advance(source.name, failed=1)
-                logger.error(
-                    "Failed to process %s/%s: %s",
-                    source.name,
-                    change.source_id,
-                    e,
-                    exc_info=True,
-                )
+                except Exception as e:
+                    if change.source_updated_at:
+                        ts = change.source_updated_at.isoformat()
+                        if earliest_failure_ts is None or ts < earliest_failure_ts:
+                            earliest_failure_ts = ts
+                    sr.objects_failed += 1
+                    sr.errors.append(f"{change.source_id}: {e}")
+                    if progress:
+                        progress.advance(source.name, failed=1)
+                    logger.error(
+                        "Failed to write %s/%s: %s",
+                        source.name,
+                        change.source_id,
+                        e,
+                        exc_info=True,
+                    )
 
         if should_reconcile and not full:
             _reconcile_source(source, db, idx, output_root)
@@ -310,15 +363,14 @@ def _sync_source(
     return sr
 
 
-def _handle_upsert(
+def _fetch_and_convert(
     source: Source,
     change: DiscoveredChange,
-    config: ProjectConfig,
-    db: StateDB,
-    idx: SearchIndex,
-    output_root: Path,
-) -> None:
-    """Process an add or update change."""
+) -> tuple[str | None, bool]:
+    """Download/extract content and convert to Markdown. Thread-safe.
+
+    Returns (body_md, is_stub).
+    """
     label = change.source_key or change.title or change.source_id
     logger.info(
         "%s/%s: processing %s",
@@ -328,7 +380,6 @@ def _handle_upsert(
     )
 
     body_md: str | None = None
-    is_stub = False
 
     if change.content_text:
         body_md = change.content_text
@@ -340,12 +391,31 @@ def _handle_upsert(
         body_md = _download_and_convert(source, change)
 
     if not body_md:
-        is_stub = True
         body_md = _make_unsupported_stub(change) if change.local_path else _make_empty_stub(change)
         logger.debug(
             "%s/%s: %s → stub", source.source_type.value, source.name, label[:80],
         )
+        return body_md, True
 
+    return body_md, False
+
+
+def _write_and_index(
+    source: Source,
+    change: DiscoveredChange,
+    config: ProjectConfig,
+    db: StateDB,
+    idx: SearchIndex,
+    output_root: Path,
+    body_md: str | None,
+    is_stub: bool,
+) -> None:
+    """Write content to corpus and update DB/index. Must be called serially."""
+    if body_md is None:
+        body_md = _make_empty_stub(change)
+        is_stub = True
+
+    label = change.source_key or change.title or change.source_id
     space = change.metadata.get("space")
     project = change.metadata.get("project")
 
@@ -389,7 +459,9 @@ def _handle_upsert(
     if existing and existing.content_sha256 == c_hash:
         if existing.source_version != change.source_version:
             db.update_version(source.name, change.source_id, change.source_version)
-        logger.debug("%s/%s: %s → unchanged", source.source_type.value, source.name, label[:80])
+        logger.debug(
+            "%s/%s: %s → unchanged", source.source_type.value, source.name, label[:80],
+        )
         return
 
     parts = split_large_document(fm, body_md, config.sync.large_document_chars, output_path)
