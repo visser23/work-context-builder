@@ -12,12 +12,14 @@ from workctx.config import ProjectConfig
 from workctx.corpus import (
     build_output_path,
     generate_agents_md,
+    generate_chatgpt_instructions,
     generate_claude_md,
     generate_context_md,
     generate_health,
     generate_index_md,
     generate_jira_summary,
     generate_manifest,
+    generate_project_brief,
     generate_readme,
     remove_corpus_file,
     write_corpus_file,
@@ -68,6 +70,9 @@ def run_sync(
         return result
 
     progress = SyncProgress(quiet=quiet or dry_run)
+    db: StateDB | None = None
+    idx: SearchIndex | None = None
+    sources: list[Source] = []
 
     try:
         db = StateDB(config.state_dir / "state.sqlite")
@@ -99,6 +104,8 @@ def run_sync(
             generate_context_md(config, output_root)
             generate_agents_md(config, output_root)
             generate_claude_md(config, output_root)
+            generate_chatgpt_instructions(config, output_root)
+            generate_project_brief(config, db, output_root)
             generate_readme(config, output_root)
 
         result.completed_at = datetime.now(UTC)
@@ -107,14 +114,18 @@ def run_sync(
         if not quiet:
             progress.print_summary()
 
-        db.close()
-        idx.close()
-
     except Exception:
         logger.exception("Sync failed with unhandled exception")
         result.status = RunStatus.FAILED
         result.completed_at = datetime.now(UTC)
     finally:
+        for source in sources:
+            with contextlib.suppress(Exception):
+                source.close()
+        if db:
+            db.close()
+        if idx:
+            idx.close()
         lock.release()
 
     return result
@@ -124,14 +135,18 @@ def run_reconciliation(config: ProjectConfig, *, run_id: str) -> None:
     """Force reconciliation across all sources to detect deletions."""
     db = StateDB(config.state_dir / "state.sqlite")
     idx = SearchIndex(config.state_dir / "state.sqlite")
-    output_root = config.output_root_path
-    sources = _build_sources(config)
-
-    for source in sources:
-        _reconcile_source(source, db, idx, output_root)
-
-    db.close()
-    idx.close()
+    sources: list[Source] = []
+    try:
+        output_root = config.output_root_path
+        sources = _build_sources(config)
+        for source in sources:
+            _reconcile_source(source, db, idx, output_root)
+    finally:
+        for source in sources:
+            with contextlib.suppress(Exception):
+                source.close()
+        db.close()
+        idx.close()
 
 
 def _build_sources(config: ProjectConfig) -> list[Source]:
@@ -205,7 +220,8 @@ def _sync_source(
                     sr.objects_deleted += 1
             return sr
 
-        latest_timestamp: str | None = None
+        latest_success_ts: str | None = None
+        earliest_failure_ts: str | None = None
 
         for change in changes:
             try:
@@ -227,10 +243,14 @@ def _sync_source(
 
                 if change.source_updated_at:
                     ts = change.source_updated_at.isoformat()
-                    if latest_timestamp is None or ts > latest_timestamp:
-                        latest_timestamp = ts
+                    if latest_success_ts is None or ts > latest_success_ts:
+                        latest_success_ts = ts
 
             except Exception as e:
+                if change.source_updated_at:
+                    ts = change.source_updated_at.isoformat()
+                    if earliest_failure_ts is None or ts < earliest_failure_ts:
+                        earliest_failure_ts = ts
                 sr.objects_failed += 1
                 sr.errors.append(f"{change.source_id}: {e}")
                 if progress:
@@ -248,7 +268,14 @@ def _sync_source(
 
         now = datetime.now(UTC)
 
-        cp_value = latest_timestamp or (checkpoint.last_checkpoint if checkpoint else None)
+        # Don't advance the checkpoint past any failed objects — rewind to
+        # just before the earliest failure so those items are retried next run.
+        if earliest_failure_ts and (
+            latest_success_ts is None or earliest_failure_ts <= latest_success_ts
+        ):
+            cp_value = checkpoint.last_checkpoint if checkpoint else None
+        else:
+            cp_value = latest_success_ts or (checkpoint.last_checkpoint if checkpoint else None)
         cp_metadata = dict(checkpoint.metadata) if checkpoint and checkpoint.metadata else {}
         if hasattr(source, "_latest_change_token") and source._latest_change_token:
             cp_metadata["change_token"] = source._latest_change_token

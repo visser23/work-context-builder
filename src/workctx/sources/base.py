@@ -50,6 +50,9 @@ class Source(ABC):
         """
         return []
 
+    def close(self) -> None:  # noqa: B027
+        """Release any resources held by this adapter."""
+
     def output_subdir(self) -> str:
         """Return the output subdirectory for this source's type."""
         return self.source_type.value
