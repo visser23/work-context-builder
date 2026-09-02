@@ -146,6 +146,7 @@ class JiraAdapter(Source):
             logger.info("Jira/%s: fetching page at offset %d", self.name, start_at)
             data = self._search(client, jql, start_at)
             total = data.get("total", 0)
+            logger.debug("Jira/%s: search returned %d total", self.name, total)
             issues = data.get("issues", [])
             if not issues:
                 break
@@ -201,6 +202,7 @@ class JiraAdapter(Source):
         jql: str,
         start_at: int,
         fields: list[str] | None = None,
+        expand: str | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "jql": jql,
@@ -209,6 +211,8 @@ class JiraAdapter(Source):
         }
         if fields:
             params["fields"] = ",".join(fields)
+        if expand:
+            params["expand"] = expand
         resp = client.get("/search", params=params)
         resp.raise_for_status()
         return resp.json()
@@ -343,7 +347,17 @@ class JiraAdapter(Source):
             lines.append("")
 
         if self.config.include_comments:
-            comments_data = self._fetch_comments(client, issue["id"])
+            # Use inline comments from search response first, only fetch
+            # separately if the issue has more comments than were returned
+            inline_comment = fields.get("comment", {})
+            inline_list = inline_comment.get("comments", [])
+            inline_total = inline_comment.get("total", 0)
+
+            if inline_total > len(inline_list):
+                comments_data = self._fetch_comments(client, issue["id"])
+            else:
+                comments_data = inline_list
+
             if comments_data:
                 lines.append("## Comments")
                 lines.append("")
