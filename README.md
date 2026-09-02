@@ -504,6 +504,8 @@ running from the repo directory.
 │   ├── health.json               Sync health status
 │   └── manifest.jsonl            Per-document metadata
 ├── confluence/<source>/<space>/<page>.md
+├── jira/<source>/SUMMARY.csv              All issues in one CSV (for Gantt charts etc.)
+├── jira/<source>/SUMMARY.md               Same as above, Markdown table
 ├── jira/<source>/<project>/<ISSUE-KEY>.md
 ├── sharepoint/<source>/<path>/<document>.md
 └── local_folder/<source>/<dir>/<file>.md
@@ -610,7 +612,7 @@ You can override this with `state_dir` in your config.
 
 ```bash
 uv sync --extra dev
-uv run pytest                    # 138 tests
+uv run pytest                    # 149 tests
 uv run ruff check src/ tests/   # lint
 uv run ruff format src/ tests/  # format
 ```
