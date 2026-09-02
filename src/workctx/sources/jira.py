@@ -138,27 +138,38 @@ class JiraAdapter(Source):
         logger.info("Jira/%s: JQL = %s", self.name, jql)
         changes: list[DiscoveredChange] = []
         start_at = 0
+        skipped = 0
 
-        # Pre-load known objects to avoid per-issue DB queries
         known = {obj.source_id: obj for obj in db.get_objects_for_source(self.name)}
 
         while True:
+            logger.info("Jira/%s: fetching page at offset %d", self.name, start_at)
             data = self._search(client, jql, start_at)
+            total = data.get("total", 0)
             issues = data.get("issues", [])
             if not issues:
                 break
 
             for issue in issues:
+                issue_id = issue["id"]
+                updated = issue.get("fields", {}).get("updated", "")
+
+                existing = known.get(issue_id)
+                if existing and existing.source_version == updated:
+                    skipped += 1
+                    continue
+
                 change = self._issue_to_change(client, issue)
                 if change:
-                    existing = known.get(change.source_id)
-                    if existing and existing.source_version == change.source_version:
-                        continue
                     change.action = ChangeAction.ADD if not existing else ChangeAction.UPDATE
                     changes.append(change)
 
             start_at += len(issues)
-            if start_at >= data.get("total", 0):
+            logger.info(
+                "Jira/%s: %d/%d fetched, %d changed, %d unchanged",
+                self.name, start_at, total, len(changes), skipped,
+            )
+            if start_at >= total:
                 break
 
         logger.info("Jira/%s: %d changes discovered", self.name, len(changes))
@@ -230,6 +241,7 @@ class JiraAdapter(Source):
             content_text=content_text,
             metadata={
                 "project": fields.get("project", {}).get("key", ""),
+                "status": _nested_name(fields.get("status")),
             },
         )
 
