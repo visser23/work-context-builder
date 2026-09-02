@@ -16,6 +16,7 @@ from workctx.corpus import (
     generate_context_md,
     generate_health,
     generate_index_md,
+    generate_jira_summary,
     generate_manifest,
     generate_readme,
     remove_corpus_file,
@@ -94,6 +95,7 @@ def run_sync(
             generate_manifest(db, output_root)
             generate_health(db, output_root, result.aggregate_status().value)
             generate_index_md(config, db, output_root)
+            generate_jira_summary(config, db, output_root)
             generate_context_md(config, output_root)
             generate_agents_md(config, output_root)
             generate_claude_md(config, output_root)

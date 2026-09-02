@@ -1,8 +1,19 @@
 """Tests for corpus output management."""
 
+import csv
+import io
+
 import pytest
 
-from workctx.corpus import build_output_path, remove_corpus_file, write_corpus_file
+from workctx.corpus import (
+    _clean_sprint,
+    _extract_jira_details,
+    _md_escape,
+    build_output_path,
+    generate_jira_summary,
+    remove_corpus_file,
+    write_corpus_file,
+)
 from workctx.models import SourceType
 
 
@@ -78,3 +89,135 @@ def test_build_output_path_sharepoint():
         relative_source_path="Architecture/design.docx",
     )
     assert path == "sharepoint/docs/Architecture/design.docx.md"
+
+
+# -- Jira summary tests --
+
+
+class TestExtractJiraDetails:
+    def test_parses_details_section(self, corpus_dir):
+        md = (
+            "---\ntitle: Test\n---\n\n# PROJ-1: Test\n\n"
+            "## Details\n\n"
+            "- **Type**: Task\n"
+            "- **Status**: In Progress\n"
+            "- **Priority**: High\n"
+            "- **Assignee**: Alice\n\n"
+            "## Description\n\nSome text.\n"
+        )
+        write_corpus_file(corpus_dir, "jira/src/PROJ/PROJ-1.md", md)
+        details = _extract_jira_details(corpus_dir, "jira/src/PROJ/PROJ-1.md")
+        assert details["Type"] == "Task"
+        assert details["Status"] == "In Progress"
+        assert details["Priority"] == "High"
+        assert details["Assignee"] == "Alice"
+
+    def test_parses_custom_fields_section(self, corpus_dir):
+        md = (
+            "---\ntitle: Test\n---\n\n# PROJ-2: Test\n\n"
+            "## Details\n\n- **Status**: Done\n\n"
+            "## Custom Fields\n\n"
+            "- **Target end**: 2026-01-15\n"
+            "- **Story Points**: 5\n\n"
+            "## Comments\n"
+        )
+        write_corpus_file(corpus_dir, "jira/src/PROJ/PROJ-2.md", md)
+        details = _extract_jira_details(corpus_dir, "jira/src/PROJ/PROJ-2.md")
+        assert details["Status"] == "Done"
+        assert details["Target end"] == "2026-01-15"
+        assert details["Story Points"] == "5"
+
+    def test_missing_file_returns_empty(self, corpus_dir):
+        assert _extract_jira_details(corpus_dir, "nonexistent.md") == {}
+
+    def test_none_path_returns_empty(self, corpus_dir):
+        assert _extract_jira_details(corpus_dir, None) == {}
+
+
+class TestCleanSprint:
+    def test_extracts_sprint_name(self):
+        raw = (
+            "com.atlassian.greenhopper.service.sprint.Sprint@abc123"
+            "[id=100,name=Sprint 5,state=ACTIVE]"
+        )
+        assert _clean_sprint(raw) == "Sprint 5"
+
+    def test_handles_simple_name(self):
+        assert _clean_sprint("Sprint 3") == "Sprint 3"
+
+    def test_handles_empty(self):
+        assert _clean_sprint("") == ""
+
+
+class TestMdEscape:
+    def test_escapes_pipes(self):
+        assert _md_escape("a | b") == "a \\| b"
+
+    def test_truncates_long(self):
+        assert len(_md_escape("x" * 200)) == 80
+
+    def test_strips_newlines(self):
+        assert _md_escape("line1\nline2") == "line1 line2"
+
+
+class TestGenerateJiraSummary:
+    def test_generates_csv_and_md(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from workctx.models import SourceObject, SourceType
+
+        output_root = tmp_path / "output"
+        output_root.mkdir()
+
+        issue_md = (
+            "---\ntitle: Fix login\n---\n\n# PROJ-1: Fix login\n\n"
+            "## Details\n\n"
+            "- **Type**: Bug\n"
+            "- **Status**: Open\n"
+            "- **Priority**: Critical\n"
+            "- **Assignee**: Bob\n"
+            "- **Reporter**: Alice\n"
+            "- **Created**: 2026-01-01\n"
+            "- **Updated**: 2026-01-15\n\n"
+        )
+        write_corpus_file(output_root, "jira/test-jira/PROJ/PROJ-1.md", issue_md)
+
+        obj = SourceObject(
+            source_name="test-jira",
+            source_type=SourceType.JIRA,
+            source_id="1001",
+            source_key="PROJ-1",
+            title="Fix login",
+            source_url="https://jira.example.com/browse/PROJ-1",
+            output_path="jira/test-jira/PROJ/PROJ-1.md",
+        )
+
+        mock_db = MagicMock()
+        mock_db.get_objects_for_source.return_value = [obj]
+
+        mock_jira_cfg = MagicMock()
+        mock_jira_cfg.name = "test-jira"
+
+        mock_config = MagicMock()
+        mock_config.sources.jira = [mock_jira_cfg]
+
+        generate_jira_summary(mock_config, mock_db, output_root)
+
+        csv_path = output_root / "jira" / "test-jira" / "SUMMARY.csv"
+        md_path = output_root / "jira" / "test-jira" / "SUMMARY.md"
+
+        assert csv_path.exists()
+        assert md_path.exists()
+
+        reader = csv.DictReader(io.StringIO(csv_path.read_text()))
+        rows = list(reader)
+        assert len(rows) == 1
+        assert rows[0]["Key"] == "PROJ-1"
+        assert rows[0]["Status"] == "Open"
+        assert rows[0]["Priority"] == "Critical"
+        assert rows[0]["Assignee"] == "Bob"
+
+        md_content = md_path.read_text()
+        assert "PROJ-1" in md_content
+        assert "Fix login" in md_content
+        assert "1 issues" in md_content
