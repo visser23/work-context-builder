@@ -34,9 +34,7 @@ def _resolve_workctx_bin() -> str:
     uv = shutil.which("uv")
     if uv:
         return f"{uv} run workctx"
-    raise RuntimeError(
-        "Cannot find 'workctx' on PATH. Install the package first."
-    )
+    raise RuntimeError("Cannot find 'workctx' on PATH. Install the package first.")
 
 
 # ── Service install (daemon mode) ─────────────────────────────────
@@ -85,12 +83,7 @@ def _launchd_label(config: ProjectConfig) -> str:
 
 
 def _launchd_plist_path(config: ProjectConfig) -> Path:
-    return (
-        Path.home()
-        / "Library"
-        / "LaunchAgents"
-        / f"{_launchd_label(config)}.plist"
-    )
+    return Path.home() / "Library" / "LaunchAgents" / f"{_launchd_label(config)}.plist"
 
 
 def _install_launchd_service(config: ProjectConfig, config_path: Path) -> str:
@@ -107,13 +100,18 @@ def _install_launchd_service(config: ProjectConfig, config_path: Path) -> str:
     if " " in workctx_bin:
         parts = workctx_bin.split(" ", 1)
         program_args = [
-            parts[0], parts[1], "daemon",
-            "--config", str(config_path.resolve()),
+            parts[0],
+            parts[1],
+            "daemon",
+            "--config",
+            str(config_path.resolve()),
         ]
     else:
         program_args = [
-            workctx_bin, "daemon",
-            "--config", str(config_path.resolve()),
+            workctx_bin,
+            "daemon",
+            "--config",
+            str(config_path.resolve()),
         ]
 
     plist: dict[str, Any] = {
@@ -123,7 +121,8 @@ def _install_launchd_service(config: ProjectConfig, config_path: Path) -> str:
         "StandardErrorPath": str(log_dir / "daemon-stderr.log"),
         "EnvironmentVariables": {
             "PATH": "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
-                    + ":" + str(Path.home() / ".local" / "bin"),
+            + ":"
+            + str(Path.home() / ".local" / "bin"),
         },
         "RunAtLoad": True,
         "KeepAlive": True,
@@ -171,13 +170,7 @@ def _systemd_unit_name(config: ProjectConfig) -> str:
 
 
 def _systemd_unit_path(config: ProjectConfig) -> Path:
-    return (
-        Path.home()
-        / ".config"
-        / "systemd"
-        / "user"
-        / _systemd_unit_name(config)
-    )
+    return Path.home() / ".config" / "systemd" / "user" / _systemd_unit_name(config)
 
 
 def _install_systemd_service(config: ProjectConfig, config_path: Path) -> str:
@@ -185,10 +178,7 @@ def _install_systemd_service(config: ProjectConfig, config_path: Path) -> str:
     unit_path = _systemd_unit_path(config)
     unit_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if " " in workctx_bin:
-        exec_start = f"{workctx_bin} daemon --config {config_path.resolve()}"
-    else:
-        exec_start = f"{workctx_bin} daemon --config {config_path.resolve()}"
+    exec_start = f"{workctx_bin} daemon --config {config_path.resolve()}"
 
     unit = textwrap.dedent(f"""\
         [Unit]
@@ -239,7 +229,8 @@ def _systemd_service_status(config: ProjectConfig) -> dict[str, Any]:
     if installed:
         result = subprocess.run(
             ["systemctl", "--user", "is-active", unit_name],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         active = result.stdout.strip() == "active"
     return {
@@ -264,17 +255,22 @@ def _install_windows_service(config: ProjectConfig, config_path: Path) -> str:
     if " " in workctx_bin:
         parts = workctx_bin.split(" ", 1)
         exe = parts[0]
-        args = f"{parts[1]} daemon --config \"{config_path.resolve()}\""
+        args = f'{parts[1]} daemon --config "{config_path.resolve()}"'
     else:
         exe = workctx_bin
-        args = f"daemon --config \"{config_path.resolve()}\""
+        args = f'daemon --config "{config_path.resolve()}"'
 
     cmd = [
-        "schtasks", "/create",
-        "/tn", task_name,
-        "/tr", f'"{exe}" {args}',
-        "/sc", "ONLOGON",
-        "/rl", "LIMITED",
+        "schtasks",
+        "/create",
+        "/tn",
+        task_name,
+        "/tr",
+        f'"{exe}" {args}',
+        "/sc",
+        "ONLOGON",
+        "/rl",
+        "LIMITED",
         "/f",
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -306,7 +302,8 @@ def _windows_service_status(config: ProjectConfig) -> dict[str, Any]:
     task_name = _windows_task_name(config)
     result = subprocess.run(
         ["schtasks", "/query", "/tn", task_name, "/fo", "LIST"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     installed = result.returncode == 0
     running = "Running" in result.stdout if installed else False
@@ -345,12 +342,18 @@ def install_schedule(config: ProjectConfig, config_path: Path) -> Path:
     if " " in workctx_bin:
         parts = workctx_bin.split(" ", 1)
         program_args = [
-            parts[0], parts[1], "sync",
-            "--config", str(config_path.resolve()),
+            parts[0],
+            parts[1],
+            "sync",
+            "--config",
+            str(config_path.resolve()),
         ]
     else:
         program_args = [
-            workctx_bin, "sync", "--config", str(config_path.resolve()),
+            workctx_bin,
+            "sync",
+            "--config",
+            str(config_path.resolve()),
         ]
 
     plist: dict[str, Any] = {
@@ -420,7 +423,8 @@ def _load_plist(plist_file: Path) -> None:
     try:
         subprocess.run(
             ["launchctl", "load", str(plist_file)],
-            capture_output=True, timeout=10,
+            capture_output=True,
+            timeout=10,
         )
     except Exception:
         logger.warning("Failed to load plist", exc_info=True)
@@ -431,7 +435,8 @@ def _unload_if_loaded(label: str, plist_file: Path) -> None:
         with contextlib.suppress(Exception):
             subprocess.run(
                 ["launchctl", "unload", str(plist_file)],
-                capture_output=True, timeout=10,
+                capture_output=True,
+                timeout=10,
             )
 
 
@@ -439,7 +444,9 @@ def _is_loaded(label: str) -> bool:
     try:
         result = subprocess.run(
             ["launchctl", "list"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         return label in result.stdout
     except Exception:

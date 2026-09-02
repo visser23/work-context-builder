@@ -11,7 +11,6 @@ from collections.abc import Generator
 from contextlib import contextmanager
 
 from rich.console import Console
-from rich.live import Live
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -44,7 +43,6 @@ class SyncProgress:
             console=console,
             disable=quiet,
         )
-        self._live: Live | None = None
         self._tasks: dict[str, TaskID] = {}
         self._stats: dict[str, dict] = {}
         self._start_time = time.monotonic()
@@ -63,9 +61,7 @@ class SyncProgress:
     def begin_discovery(self, source_name: str) -> None:
         if self._quiet:
             return
-        task_id = self._progress.add_task(
-            f"[cyan]Discovering {source_name}...", total=None
-        )
+        task_id = self._progress.add_task(f"[cyan]Discovering {source_name}...", total=None)
         self._tasks[f"discover:{source_name}"] = task_id
 
     def end_discovery(self, source_name: str, total: int, skipped: int = 0) -> None:
@@ -74,8 +70,12 @@ class SyncProgress:
             self._progress.remove_task(self._tasks.pop(disc_key))
         self._skipped[source_name] = skipped
         self._stats[source_name] = {
-            "total": total, "done": 0, "added": 0,
-            "updated": 0, "deleted": 0, "failed": 0,
+            "total": total,
+            "done": 0,
+            "added": 0,
+            "updated": 0,
+            "deleted": 0,
+            "failed": 0,
         }
         if self._quiet:
             return
@@ -85,8 +85,15 @@ class SyncProgress:
         task_id = self._progress.add_task(label, total=total)
         self._tasks[source_name] = task_id
 
-    def advance(self, source_name: str, *, added: int = 0, updated: int = 0,
-                deleted: int = 0, failed: int = 0) -> None:
+    def advance(
+        self,
+        source_name: str,
+        *,
+        added: int = 0,
+        updated: int = 0,
+        deleted: int = 0,
+        failed: int = 0,
+    ) -> None:
         if source_name in self._stats:
             s = self._stats[source_name]
             s["done"] += 1
@@ -100,9 +107,7 @@ class SyncProgress:
     def finish_source(self, source_name: str, status: str) -> None:
         if source_name in self._tasks and not self._quiet:
             task = self._tasks[source_name]
-            self._progress.update(
-                task, description=f"[bold]{source_name} [{status}]"
-            )
+            self._progress.update(task, description=f"[bold]{source_name} [{status}]")
 
     def print_summary(self) -> None:
         elapsed = time.monotonic() - self._start_time

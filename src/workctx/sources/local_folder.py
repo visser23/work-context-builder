@@ -31,7 +31,9 @@ from workctx.state import StateDB
 logger = logging.getLogger(__name__)
 
 _SELF_MARKERS = {
-    "state.sqlite", "run.lock", "notification_state.json",
+    "state.sqlite",
+    "run.lock",
+    "notification_state.json",
 }
 
 
@@ -127,7 +129,9 @@ class LocalFolderAdapter(Source):
 
         logger.info(
             "LocalFolder/%s: %d files scanned, %d changes detected",
-            self.name, len(seen_ids), len(changes),
+            self.name,
+            len(seen_ids),
+            len(changes),
         )
         return changes
 
@@ -149,10 +153,7 @@ class LocalFolderAdapter(Source):
                     dirs.clear()
                     continue
 
-                dirs[:] = [
-                    d for d in dirs
-                    if not self._should_skip_dir(root_path / d)
-                ]
+                dirs[:] = [d for d in dirs if not self._should_skip_dir(root_path / d)]
 
                 for fname in filenames:
                     if fname.startswith(".") or fname.startswith("~$"):
@@ -186,17 +187,22 @@ class LocalFolderAdapter(Source):
 
         name = dir_path.name
         if name in {
-            ".git", "__pycache__", "node_modules", ".venv", "venv",
-            ".tox", ".mypy_cache", ".ruff_cache", ".pytest_cache",
-            ".DS_Store", "$RECYCLE.BIN", "System Volume Information",
+            ".git",
+            "__pycache__",
+            "node_modules",
+            ".venv",
+            "venv",
+            ".tox",
+            ".mypy_cache",
+            ".ruff_cache",
+            ".pytest_cache",
+            ".DS_Store",
+            "$RECYCLE.BIN",
+            "System Volume Information",
         }:
             return True
 
-        return any(
-            marker in os.listdir(dir_path)
-            for marker in _SELF_MARKERS
-            if dir_path.exists()
-        )
+        return any(marker in os.listdir(dir_path) for marker in _SELF_MARKERS if dir_path.exists())
 
     def _is_excluded(self, rel_path: str) -> bool:
         fname = os.path.basename(rel_path)
@@ -221,12 +227,15 @@ class LocalFolderAdapter(Source):
         if existing.file_size is not None and existing.file_size != stat.st_size:
             return True
         return bool(
-            existing.file_mtime is not None
-            and abs(existing.file_mtime - stat.st_mtime) > 1.0
+            existing.file_mtime is not None and abs(existing.file_mtime - stat.st_mtime) > 1.0
         )
 
     def _make_change(
-        self, file_path: Path, rel_path: str, stat: os.stat_result, action: ChangeAction,
+        self,
+        file_path: Path,
+        rel_path: str,
+        stat: os.stat_result,
+        action: ChangeAction,
     ) -> DiscoveredChange:
         return DiscoveredChange(
             source_id=rel_path,

@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_API = "https://api.telegram.org"
 SUPPRESSION_FILE = "notification_state.json"
-SUPPRESSION_HOURS = 4
 REMINDER_HOURS = 24
 
 
@@ -144,13 +143,9 @@ class NotificationDispatcher:
         try:
             dt = datetime.fromisoformat(last_sent)
             hours = (datetime.now(UTC) - dt).total_seconds() / 3600
-            if hours < SUPPRESSION_HOURS:
-                return True
-            if hours < REMINDER_HOURS:
-                return True
+            return hours < REMINDER_HOURS
         except ValueError:
-            pass
-        return False
+            return False
 
     def _record_sent(self, key: str) -> None:
         self._state[key] = {

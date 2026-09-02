@@ -50,8 +50,7 @@ class ConfluenceAdapter(Source):
         secret = get_secret(self.config.auth.secret_ref or "")
         if not secret:
             issues.append(
-                f"{self.name}: no API token found for secret_ref "
-                f"'{self.config.auth.secret_ref}'"
+                f"{self.name}: no API token found for secret_ref '{self.config.auth.secret_ref}'"
             )
         return issues
 
@@ -135,9 +134,7 @@ class ConfluenceAdapter(Source):
             if full or not checkpoint or not checkpoint.last_checkpoint:
                 space_changes = self._enumerate_all_pages(client, space_key, db)
             else:
-                space_changes = self._enumerate_updated_pages(
-                    client, space_key, checkpoint, db
-                )
+                space_changes = self._enumerate_updated_pages(client, space_key, checkpoint, db)
             changes.extend(space_changes)
 
         logger.info("Confluence/%s: %d changes discovered", self.name, len(changes))
@@ -250,10 +247,7 @@ class ConfluenceAdapter(Source):
         links = page.get("_links", {})
         if "webui" in links:
             webui = links["webui"]
-            source_url = (
-                f"{base}{webui}" if self._is_dc
-                else f"{base}/wiki{webui}"
-            )
+            source_url = f"{base}{webui}" if self._is_dc else f"{base}/wiki{webui}"
         elif self._is_dc:
             source_url = f"{base}/pages/viewpage.action?pageId={page_id}"
         else:
@@ -312,9 +306,10 @@ class ConfluenceAdapter(Source):
         except ValueError:
             return checkpoint
 
-    def __del__(self) -> None:
+    def close(self) -> None:
         if self._client:
             self._client.close()
+            self._client = None
 
 
 def _parse_confluence_datetime(val: str) -> datetime | None:

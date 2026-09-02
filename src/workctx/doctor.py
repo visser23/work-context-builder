@@ -93,18 +93,21 @@ def run_doctor(config_path: Path, *, verbose: bool = False) -> bool:
     console.print("[bold]Document Converters[/bold]")
     try:
         from markitdown import MarkItDown  # noqa: F401
+
         ok("MarkItDown available")
     except ImportError:
         fail("MarkItDown not installed (pip install markitdown)")
 
     try:
         import pymupdf4llm  # noqa: F401
+
         ok("PyMuPDF4LLM available")
     except ImportError:
         warn("PyMuPDF4LLM not installed (pip install pymupdf4llm) — PDF conversion unavailable")
 
     try:
         from docling.document_converter import DocumentConverter  # noqa: F401
+
         ok("Docling available (optional fallback)")
     except ImportError:
         if verbose:
@@ -191,6 +194,7 @@ def run_doctor(config_path: Path, *, verbose: bool = False) -> bool:
     console.print()
     console.print("[bold]Scheduler[/bold]")
     from workctx.scheduler import get_schedule_status
+
     sched = get_schedule_status(config)
     if sched["installed"]:
         ok(f"Schedule installed: {sched.get('time', 'unknown')}")
@@ -236,19 +240,14 @@ def _check_jira_connection(jira_config, secret: str, ok, fail, warn) -> None:
             else:
                 resp = httpx.get(
                     f"{base}/rest/api/{api_ver}/myself",
-                    auth=httpx.BasicAuth(
-                        jira_config.auth.username or "", secret
-                    ),
+                    auth=httpx.BasicAuth(jira_config.auth.username or "", secret),
                     timeout=15.0,
                     headers={"Accept": "application/json"},
                 )
             if resp.status_code == 200:
                 user = resp.json()
                 mode = "DC/PAT" if auth_style == "bearer" else "Cloud"
-                ok(
-                    f"Jira connected as: "
-                    f"{user.get('displayName', 'unknown')} ({mode})"
-                )
+                ok(f"Jira connected as: {user.get('displayName', 'unknown')} ({mode})")
                 return
         except Exception:
             continue
@@ -256,9 +255,7 @@ def _check_jira_connection(jira_config, secret: str, ok, fail, warn) -> None:
     fail("Jira authentication failed — check token and base URL")
 
 
-def _check_confluence_connection(
-    conf_config, secret: str, ok, fail, warn
-) -> None:
+def _check_confluence_connection(conf_config, secret: str, ok, fail, warn) -> None:
     """Test Confluence API connectivity (Cloud + DC with PAT)."""
     import httpx
 
@@ -283,9 +280,7 @@ def _check_confluence_connection(
             else:
                 resp = httpx.get(
                     f"{api_base}/space",
-                    auth=httpx.BasicAuth(
-                        conf_config.auth.username or "", secret
-                    ),
+                    auth=httpx.BasicAuth(conf_config.auth.username or "", secret),
                     timeout=15.0,
                     headers={"Accept": "application/json"},
                     params={"limit": 1},
@@ -340,18 +335,14 @@ def _check_sharepoint_browser(sp_config, ok, fail, warn) -> None:
             if resp.status_code == 200:
                 ok("SharePoint session valid")
             elif resp.status_code in (401, 403):
-                warn(
-                    "SharePoint session expired. "
-                    "Run: workctx auth login-sharepoint"
-                )
+                warn("SharePoint session expired. Run: workctx auth login-sharepoint")
             else:
                 warn(f"SharePoint returned HTTP {resp.status_code}")
         except Exception as e:
             warn(f"SharePoint connectivity check failed: {e}")
     else:
         warn(
-            "No SharePoint cookies — run: "
-            f"workctx auth login-sharepoint --source {sp_config.name}"
+            f"No SharePoint cookies — run: workctx auth login-sharepoint --source {sp_config.name}"
         )
 
     profile_dir = get_profile_dir(sp_config.name)

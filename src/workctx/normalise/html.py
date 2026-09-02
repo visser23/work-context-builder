@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import tempfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -22,14 +23,16 @@ def convert_html(html_content: str) -> str:
         from markitdown import MarkItDown
 
         converter = MarkItDown()
-        import tempfile
 
         with tempfile.NamedTemporaryFile(suffix=".html", mode="w", delete=False) as f:
             f.write(html_content)
             f.flush()
-            result = converter.convert(f.name)
+            tmp_name = f.name
+        try:
+            result = converter.convert(tmp_name)
             text = result.text_content if hasattr(result, "text_content") else str(result)
-        Path(f.name).unlink(missing_ok=True)
+        finally:
+            Path(tmp_name).unlink(missing_ok=True)
         if text and text.strip():
             return text.strip()
     except Exception:

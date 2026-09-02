@@ -32,8 +32,7 @@ def _find_config(config: str | None) -> Path:
         console.print("[red]Multiple YAML configs found. Specify with --config.[/red]")
         sys.exit(1)
     console.print(
-        "[red]No config file found. Create one with 'workctx init' "
-        "or specify --config.[/red]"
+        "[red]No config file found. Create one with 'workctx init' or specify --config.[/red]"
     )
     sys.exit(1)
 
@@ -70,7 +69,9 @@ def sync(config: str | None, dry_run: bool, verbose: bool, full: bool) -> None:
     if dry_run:
         for sr in result.source_results:
             status_color = {
-                "healthy": "green", "degraded": "yellow", "failed": "red",
+                "healthy": "green",
+                "degraded": "yellow",
+                "failed": "red",
             }[sr.status.value]
             console.print(
                 f"  [{status_color}]{sr.source_type.value}/{sr.source_name}: "
@@ -118,14 +119,10 @@ def status(config: str | None) -> None:
             cp = db.get_checkpoint(name)
             count = db.count_objects(name)
             last_success = (
-                cp.last_success.strftime("%d %b %Y %H:%M")
-                if cp and cp.last_success
-                else "Never"
+                cp.last_success.strftime("%d %b %Y %H:%M") if cp and cp.last_success else "Never"
             )
             status_str = (
-                "[green]Healthy[/green]"
-                if cp and cp.last_success
-                else "[yellow]Pending[/yellow]"
+                "[green]Healthy[/green]" if cp and cp.last_success else "[yellow]Pending[/yellow]"
             )
             source_type = cp.source_type.value if cp else "unknown"
             table.add_row(name, source_type, f"{count:,}", last_success, status_str)
@@ -277,9 +274,7 @@ def auth_login_sharepoint(config: str | None, source: str, headless: bool) -> No
             sp_config.auth.secret_ref,
             headless=headless,
         )
-        console.print(
-            f"[green]Cookies captured: {', '.join(cookies.keys())}[/green]"
-        )
+        console.print(f"[green]Cookies captured: {', '.join(cookies.keys())}[/green]")
     except Exception as e:
         console.print(f"[red]Login failed: {e}[/red]")
         sys.exit(1)
@@ -296,9 +291,7 @@ def install_schedule(config: str | None) -> None:
     config_path = _find_config(config)
     plist_path = install_schedule(cfg, config_path)
     console.print(f"[green]Schedule installed: {plist_path}[/green]")
-    console.print(
-        f"Sync will run daily at {cfg.schedule.hour:02d}:{cfg.schedule.minute:02d}"
-    )
+    console.print(f"Sync will run daily at {cfg.schedule.hour:02d}:{cfg.schedule.minute:02d}")
 
 
 @main.command("remove-schedule")

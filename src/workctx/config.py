@@ -45,9 +45,7 @@ class SharePointSource(BaseModel):
     doc_library: str = "Shared Documents"
     server_relative_path: str | None = None
     include: list[str] = Field(default_factory=lambda: ["**/*"])
-    exclude: list[str] = Field(
-        default_factory=lambda: ["**/~$*", "**/.DS_Store", "**/*.tmp"]
-    )
+    exclude: list[str] = Field(default_factory=lambda: ["**/~$*", "**/.DS_Store", "**/*.tmp"])
     auth: AuthConfig | None = None
 
 
@@ -55,9 +53,7 @@ class LocalFolderSource(BaseModel):
     name: str
     paths: list[str]
     include: list[str] = Field(default_factory=lambda: ["**/*"])
-    exclude: list[str] = Field(
-        default_factory=lambda: ["**/~$*", "**/.DS_Store", "**/*.tmp"]
-    )
+    exclude: list[str] = Field(default_factory=lambda: ["**/~$*", "**/.DS_Store", "**/*.tmp"])
 
 
 class SourcesConfig(BaseModel):
@@ -98,11 +94,19 @@ class ProjectInfo(BaseModel):
     id: str
     name: str
     output_root: str
+    state_dir: str | None = None
 
     @field_validator("output_root")
     @classmethod
     def expand_output_root(cls, v: str) -> str:
         return str(Path(v).expanduser())
+
+    @field_validator("state_dir")
+    @classmethod
+    def expand_state_dir(cls, v: str | None) -> str | None:
+        if v:
+            return str(Path(v).expanduser())
+        return v
 
 
 class ProjectConfig(BaseModel):
@@ -117,6 +121,8 @@ class ProjectConfig(BaseModel):
 
     @property
     def state_dir(self) -> Path:
+        if self.project.state_dir:
+            return Path(self.project.state_dir)
         import platform
 
         system = platform.system()

@@ -138,14 +138,12 @@ class SharePointLocalSource(Source):
     def get_current_ids(self) -> set[str]:
         if not self._local_path or not self._local_path.exists():
             return set()
-        return {
-            str(f.relative_to(self._local_path))
-            for f in self._walk_files()
-        }
+        return {str(f.relative_to(self._local_path)) for f in self._walk_files()}
 
     def _walk_files(self) -> list[Path]:
         """Walk the local directory, applying include/exclude filters."""
-        assert self._local_path is not None
+        if not self._local_path:
+            return []
         files: list[Path] = []
         for root, _dirs, filenames in os.walk(self._local_path):
             for fname in filenames:
@@ -187,8 +185,7 @@ class SharePointLocalSource(Source):
         if existing.file_size is not None and existing.file_size != stat.st_size:
             return True
         return bool(
-            existing.file_mtime is not None
-            and abs(existing.file_mtime - stat.st_mtime) > 1.0
+            existing.file_mtime is not None and abs(existing.file_mtime - stat.st_mtime) > 1.0
         )
 
     def _make_change(

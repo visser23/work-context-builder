@@ -88,9 +88,7 @@ class StateDB:
 
     def _get_schema_version(self) -> int:
         try:
-            row = self.conn.execute(
-                "SELECT MAX(version) FROM schema_version"
-            ).fetchone()
+            row = self.conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
             return row[0] if row and row[0] is not None else 0
         except sqlite3.OperationalError:
             return 0

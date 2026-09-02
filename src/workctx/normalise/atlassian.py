@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -140,8 +141,7 @@ def _handle_macro(macro_name: str, full_match: str) -> str:
         return ""
 
     return (
-        f"\n> [Confluence macro: {macro_name}]\n"
-        "> This content could not be represented directly.\n"
+        f"\n> [Confluence macro: {macro_name}]\n> This content could not be represented directly.\n"
     )
 
 
@@ -342,13 +342,14 @@ def _adf_unknown(node: dict[str, Any]) -> str:
     return text
 
 
-_ADF_HANDLERS: dict[str, Any] = {
+_AdfHandler = Callable[[dict[str, Any]], str]
+
+_ADF_HANDLERS: dict[str, _AdfHandler] = {
     "text": _adf_text,
     "paragraph": _adf_paragraph,
     "heading": _adf_heading,
     "bulletList": _adf_bullet_list,
     "orderedList": _adf_ordered_list,
-    "listItem": _adf_list_item,
     "codeBlock": _adf_code_block,
     "blockquote": _adf_blockquote,
     "table": _adf_table,
