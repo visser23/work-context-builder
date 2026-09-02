@@ -21,7 +21,7 @@ from workctx.state import StateDB
 
 logger = logging.getLogger(__name__)
 
-MAX_RESULTS = 100
+MAX_RESULTS = 500
 REQUEST_TIMEOUT = 120.0
 
 
@@ -146,24 +146,38 @@ class JiraAdapter(Source):
             logger.info("Jira/%s: fetching page at offset %d", self.name, start_at)
             data = self._search(client, jql, start_at)
             total = data.get("total", 0)
-            logger.debug("Jira/%s: search returned %d total", self.name, total)
             issues = data.get("issues", [])
             if not issues:
                 break
 
             for issue in issues:
                 issue_id = issue["id"]
-                updated = issue.get("fields", {}).get("updated", "")
+                fields = issue.get("fields", {})
+                updated = fields.get("updated", "")
 
                 existing = known.get(issue_id)
                 if existing and existing.source_version == updated:
                     skipped += 1
                     continue
 
-                change = self._issue_to_change(client, issue)
-                if change:
-                    change.action = ChangeAction.ADD if not existing else ChangeAction.UPDATE
-                    changes.append(change)
+                issue_key = issue.get("key", "")
+                summary = fields.get("summary", "")
+                base = self.config.base_url.rstrip("/")
+
+                changes.append(DiscoveredChange(
+                    source_id=issue_id,
+                    source_key=issue_key,
+                    title=summary,
+                    source_url=f"{base}/browse/{issue_key}",
+                    source_version=updated,
+                    source_updated_at=_parse_jira_datetime(updated),
+                    action=ChangeAction.ADD if not existing else ChangeAction.UPDATE,
+                    metadata={
+                        "project": fields.get("project", {}).get("key", ""),
+                        "status": _nested_name(fields.get("status")),
+                        "_raw_issue": issue,
+                    },
+                ))
 
             start_at += len(issues)
             logger.info(
@@ -217,37 +231,15 @@ class JiraAdapter(Source):
         resp.raise_for_status()
         return resp.json()
 
-    def _issue_to_change(
-        self,
-        client: httpx.Client,
-        issue: dict[str, Any],
-    ) -> DiscoveredChange | None:
-        fields = issue.get("fields", {})
-        issue_id = issue["id"]
-        issue_key = issue.get("key", "")
-        summary = fields.get("summary", "")
-        updated = fields.get("updated", "")
-        base = self.config.base_url.rstrip("/")
-        source_url = f"{base}/browse/{issue_key}"
-
-        content_text = self._render_issue(issue, fields, client)
-        if content_text is None:
+    def render_content(self, change: DiscoveredChange) -> str | None:
+        """Render a Jira issue to Markdown. Called during the concurrent
+        processing phase rather than during serial discovery."""
+        raw_issue = change.metadata.get("_raw_issue")
+        if not raw_issue:
             return None
-
-        return DiscoveredChange(
-            source_id=issue_id,
-            source_key=issue_key,
-            title=summary,
-            source_url=source_url,
-            source_version=updated,
-            source_updated_at=_parse_jira_datetime(updated),
-            action=ChangeAction.ADD,
-            content_text=content_text,
-            metadata={
-                "project": fields.get("project", {}).get("key", ""),
-                "status": _nested_name(fields.get("status")),
-            },
-        )
+        client = self._get_client()
+        fields = raw_issue.get("fields", {})
+        return self._render_issue(raw_issue, fields, client)
 
     def _render_issue(
         self,

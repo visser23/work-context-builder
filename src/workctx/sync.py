@@ -398,6 +398,8 @@ def _fetch_and_convert(
 
     if change.content_text:
         body_md = change.content_text
+    elif hasattr(source, "render_content") and source.render_content is not None:
+        body_md = source.render_content(change)
     elif change.local_path:
         body_md = _convert_local_file(Path(change.local_path))
     elif change.content:
@@ -427,6 +429,8 @@ def _write_and_index(
 ) -> None:
     """Write content to corpus and update DB/index. Thread-safe via _DB_WRITE_LOCK."""
     with _DB_WRITE_LOCK:
+        change.metadata.pop("_raw_issue", None)
+
         if body_md is None:
             body_md = _make_empty_stub(change)
             is_stub = True
