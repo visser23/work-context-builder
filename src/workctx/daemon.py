@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 SYNC_INTERVAL_HOURS = 24
 POLL_INTERVAL_SECONDS = 10
 LOOP_SLEEP_SECONDS = 30
+COOKIE_KEEPALIVE_HOURS = 4
 
 
 class Daemon:
@@ -38,6 +39,7 @@ class Daemon:
         self._syncing = False
         self._sync_lock = threading.Lock()
         self._last_sync_attempt: datetime | None = None
+        self._last_cookie_keepalive: datetime | None = None
 
     def run(self) -> None:
         """Run the daemon loop until SIGTERM/SIGINT."""
@@ -56,6 +58,7 @@ class Daemon:
         try:
             while self._running:
                 self._check_and_sync()
+                self._check_cookie_keepalive()
                 time.sleep(LOOP_SLEEP_SECONDS)
         finally:
             if tg_poller:
@@ -131,6 +134,45 @@ class Daemon:
 
         logger.info("Daily sync is due — triggering")
         self.trigger_sync(source="daily-check")
+
+    def _check_cookie_keepalive(self) -> None:
+        """Ping SharePoint periodically to keep session cookies alive."""
+        browser_sources = [sp for sp in self.config.sources.sharepoint if sp.mode == "browser"]
+        if not browser_sources:
+            return
+
+        now = datetime.now(UTC)
+        if self._last_cookie_keepalive:
+            hours = (now - self._last_cookie_keepalive).total_seconds() / 3600
+            if hours < COOKIE_KEEPALIVE_HOURS:
+                return
+
+        from workctx.auth.sharepoint import http_keepalive, load_cookie_blob
+
+        self._last_cookie_keepalive = now
+
+        for sp in browser_sources:
+            secret_ref = sp.auth.secret_ref if sp.auth else None
+            if not secret_ref:
+                continue
+
+            blob = load_cookie_blob(secret_ref)
+            if not blob:
+                logger.warning("No stored cookies for %s — skipping keepalive", sp.name)
+                continue
+
+            site_url = blob["site_url"]
+            cookies = blob["cookies"]
+
+            if http_keepalive(site_url, cookies):
+                logger.debug("Cookie keepalive OK for %s", sp.name)
+            else:
+                msg = (
+                    f"SharePoint session expired for '{sp.name}'.\n"
+                    f"Run: workctx auth login-sharepoint --source {sp.name}"
+                )
+                logger.warning(msg)
+                self._notify(msg)
 
     def _do_sync(self, *, full: bool = False, source: str = "schedule") -> str:
         """Execute a sync and return a result summary."""
