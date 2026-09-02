@@ -1,7 +1,7 @@
 [project]
 name = "work-context-mirror"
-version = "0.1.0"
-description = "Lightweight macOS tool to create and maintain a local, LLM-friendly mirror of work knowledge from Confluence, Jira, and SharePoint/OneDrive"
+version = "1.0.0"
+description = "Sync Confluence, Jira, SharePoint, and local files into an LLM-friendly Markdown knowledge base"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"

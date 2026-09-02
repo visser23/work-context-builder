@@ -13,9 +13,12 @@ import logging
 import platform
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from workctx.secrets import get_secret, set_secret
+
+if TYPE_CHECKING:
+    from playwright.sync_api import BrowserContext
 
 logger = logging.getLogger(__name__)
 
@@ -261,7 +264,7 @@ def http_keepalive(site_url: str, cookies: dict[str, str]) -> bool:
         return False
 
 
-def _extract_sp_cookies(context: Any, site_url: str) -> dict[str, str]:
+def _extract_sp_cookies(context: BrowserContext, site_url: str) -> dict[str, str]:
     """Extract rtFa and FedAuth cookies from a Playwright browser context."""
     all_cookies = context.cookies([site_url])
     sp_cookies: dict[str, str] = {}
@@ -274,7 +277,6 @@ def _extract_sp_cookies(context: Any, site_url: str) -> dict[str, str]:
 def _persist_cookies(
     secret_ref: str, cookies: dict[str, str], site_url: str
 ) -> None:
-    """Store cookies in Keychain as a JSON blob."""
     data = {
         "cookies": cookies,
         "site_url": site_url,

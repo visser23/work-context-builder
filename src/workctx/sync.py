@@ -46,8 +46,8 @@ from workctx.state import StateDB
 
 logger = logging.getLogger(__name__)
 
-MAX_SYNC_WORKERS = 12
-_HEAVY_CONVERSION_SEMAPHORE = threading.Semaphore(3)
+_HEAVY_CONVERSION_LIMIT = 3
+_HEAVY_CONVERSION_SEMAPHORE = threading.Semaphore(_HEAVY_CONVERSION_LIMIT)
 _DB_WRITE_LOCK = threading.Lock()
 
 
@@ -88,10 +88,11 @@ def run_sync(
 
         sources = _build_sources(config)
 
+        max_workers = max(1, config.sync.max_concurrency)
         with (
             progress.live(),
             ThreadPoolExecutor(
-                max_workers=MAX_SYNC_WORKERS, thread_name_prefix="worker",
+                max_workers=max_workers, thread_name_prefix="worker",
             ) as shared_pool,
             ThreadPoolExecutor(
                 max_workers=len(sources), thread_name_prefix="source",
@@ -103,6 +104,7 @@ def run_sync(
                     source, config, db, idx, output_root,
                     dry_run=dry_run, full=full,
                     progress=progress, worker_pool=shared_pool,
+                    max_workers=max_workers,
                 ): source
                 for source in sources
             }
@@ -171,18 +173,20 @@ def _build_sources(config: ProjectConfig) -> list[Source]:
     from workctx.sources.sharepoint_web import SharePointWebSource
 
     sources: list[Source] = []
+    overlap = config.sync.overlap_minutes
+    max_workers = max(1, config.sync.max_concurrency)
 
     for sp_config in config.sources.sharepoint:
         if sp_config.mode == "onedrive_local":
             sources.append(SharePointLocalSource(sp_config))
         elif sp_config.mode == "browser":
-            sources.append(SharePointWebSource(sp_config))
+            sources.append(SharePointWebSource(sp_config, max_workers=max_workers))
 
     for jira_config in config.sources.jira:
-        sources.append(JiraAdapter(jira_config))
+        sources.append(JiraAdapter(jira_config, overlap_minutes=overlap))
 
     for conf_config in config.sources.confluence:
-        sources.append(ConfluenceAdapter(conf_config))
+        sources.append(ConfluenceAdapter(conf_config, overlap_minutes=overlap))
 
     for lf_config in config.sources.local_folders:
         sources.append(
@@ -207,6 +211,7 @@ def _sync_source(
     full: bool = False,
     progress: SyncProgress | None = None,
     worker_pool: ThreadPoolExecutor | None = None,
+    max_workers: int = 4,
 ) -> SourceResult:
     """Sync a single source."""
     sr = SourceResult(source_name=source.name, source_type=source.source_type)
@@ -237,7 +242,6 @@ def _sync_source(
         latest_success_ts: str | None = None
         earliest_failure_ts: str | None = None
 
-        # Separate deletes (must be serial) from upserts (can be parallel)
         deletes = [c for c in changes if c.action == ChangeAction.DELETE]
         upserts = [c for c in changes if c.action != ChangeAction.DELETE]
 
@@ -258,8 +262,6 @@ def _sync_source(
                     progress.advance(source.name, failed=1)
                 logger.error("Failed to delete %s/%s: %s", source.name, change.source_id, e)
 
-        # Process upserts concurrently: download+convert in threads,
-        # then serialize DB writes as results come in.
         def _process_one(
             change: DiscoveredChange,
         ) -> tuple[DiscoveredChange, str | None, bool, Exception | None]:
@@ -269,7 +271,7 @@ def _sync_source(
             except Exception as exc:
                 return (change, None, True, exc)
 
-        pool = worker_pool or ThreadPoolExecutor(max_workers=MAX_SYNC_WORKERS)
+        pool = worker_pool or ThreadPoolExecutor(max_workers=max_workers)
         try:
             futures = {pool.submit(_process_one, c): c for c in upserts}
             for future in as_completed(futures):
@@ -345,8 +347,9 @@ def _sync_source(
         else:
             cp_value = latest_success_ts or (checkpoint.last_checkpoint if checkpoint else None)
         cp_metadata = dict(checkpoint.metadata) if checkpoint and checkpoint.metadata else {}
-        if hasattr(source, "_latest_change_token") and source._latest_change_token:
-            cp_metadata["change_token"] = source._latest_change_token
+        change_token = getattr(source, "_latest_change_token", None)
+        if change_token:
+            cp_metadata["change_token"] = change_token
 
         new_cp = SyncCheckpoint(
             source_name=source.name,
@@ -586,7 +589,7 @@ def _convert_local_file(file_path: Path) -> str | None:
     conversions run at once — the remaining thread-pool threads stay free
     for fast I/O (downloads, text reads).
     """
-    from workctx.normalise.convertibility import _TEXT_EXTENSIONS
+    from workctx.normalise.convertibility import TEXT_EXTENSIONS
     from workctx.normalise.office import can_handle as office_handles
     from workctx.normalise.office import convert_office
     from workctx.normalise.pdf import can_handle as pdf_handles
@@ -601,7 +604,7 @@ def _convert_local_file(file_path: Path) -> str | None:
             return convert_office(file_path)
 
     suffix = file_path.suffix.lower()
-    if suffix in _TEXT_EXTENSIONS:
+    if suffix in TEXT_EXTENSIONS:
         try:
             return file_path.read_text(encoding="utf-8", errors="replace")
         except OSError:

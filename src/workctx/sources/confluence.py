@@ -12,6 +12,7 @@ from workctx.config import ConfluenceSource
 from workctx.models import (
     ChangeAction,
     DiscoveredChange,
+    SourceObject,
     SourceType,
     SyncCheckpoint,
 )
@@ -28,8 +29,9 @@ REQUEST_TIMEOUT = 120.0
 class ConfluenceAdapter(Source):
     """Confluence source adapter supporting both Cloud and Data Center."""
 
-    def __init__(self, config: ConfluenceSource) -> None:
+    def __init__(self, config: ConfluenceSource, *, overlap_minutes: int = 15) -> None:
         self.config = config
+        self._overlap_minutes = overlap_minutes
         self._client: httpx.Client | None = None
         self._is_dc: bool | None = None
 
@@ -130,7 +132,6 @@ class ConfluenceAdapter(Source):
         client = self._get_client()
         changes: list[DiscoveredChange] = []
 
-        # Pre-load known objects to avoid per-page DB queries
         known = {obj.source_id: obj for obj in db.get_objects_for_source(self.name)}
 
         for space_key in self.config.spaces:
@@ -152,7 +153,7 @@ class ConfluenceAdapter(Source):
         return ids
 
     def _enumerate_all_pages(
-        self, client: httpx.Client, space_key: str, known: dict[str, Any],
+        self, client: httpx.Client, space_key: str, known: dict[str, SourceObject],
     ) -> list[DiscoveredChange]:
         """Enumerate all pages in a space (initial sync)."""
         changes: list[DiscoveredChange] = []
@@ -192,7 +193,7 @@ class ConfluenceAdapter(Source):
         client: httpx.Client,
         space_key: str,
         checkpoint: SyncCheckpoint,
-        known: dict[str, Any],
+        known: dict[str, SourceObject],
     ) -> list[DiscoveredChange]:
         """Query for pages updated since the checkpoint."""
         since = self._checkpoint_with_overlap(checkpoint.last_checkpoint or "")
@@ -229,7 +230,7 @@ class ConfluenceAdapter(Source):
         return changes
 
     def _page_to_change(
-        self, page: dict[str, Any], space_key: str, known: dict[str, Any],
+        self, page: dict[str, Any], space_key: str, known: dict[str, SourceObject],
     ) -> DiscoveredChange | None:
         """Convert a Confluence page API response to a DiscoveredChange."""
         from workctx.normalise.atlassian import confluence_storage_to_markdown
@@ -303,7 +304,7 @@ class ConfluenceAdapter(Source):
     def _checkpoint_with_overlap(self, checkpoint: str) -> str:
         try:
             dt = datetime.fromisoformat(checkpoint)
-            overlap = timedelta(minutes=15)
+            overlap = timedelta(minutes=self._overlap_minutes)
             adjusted = dt - overlap
             return adjusted.strftime("%Y-%m-%d %H:%M")
         except ValueError:

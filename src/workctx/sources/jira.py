@@ -28,8 +28,9 @@ REQUEST_TIMEOUT = 120.0
 class JiraAdapter(Source):
     """Jira source adapter supporting both Cloud (API v3) and Data Center (API v2)."""
 
-    def __init__(self, config: JiraSource) -> None:
+    def __init__(self, config: JiraSource, *, overlap_minutes: int = 15) -> None:
         self.config = config
+        self._overlap_minutes = overlap_minutes
         self._client: httpx.Client | None = None
         self._field_map: dict[str, str] | None = None
         self._is_dc: bool | None = None
@@ -142,15 +143,12 @@ class JiraAdapter(Source):
 
         known = {obj.source_id: obj for obj in db.get_objects_for_source(self.name)}
 
-        # Request only the fields we use — drastically reduces payload and
-        # server-side processing time on DC instances
         needed_fields = [
             "summary", "updated", "project", "status", "issuetype",
             "priority", "resolution", "reporter", "assignee", "created",
             "labels", "components", "fixVersions", "description",
             "issuelinks", "attachment", "comment", "parent",
         ]
-        # Include custom fields (sprint, epic) if field map loaded
         if self._field_map:
             needed_fields.extend(
                 fid for fid in self._field_map.values() if fid.startswith("customfield_")
@@ -353,8 +351,6 @@ class JiraAdapter(Source):
             lines.append("")
 
         if self.config.include_comments:
-            # Use inline comments from search response first, only fetch
-            # separately if the issue has more comments than were returned
             inline_comment = fields.get("comment", {})
             inline_list = inline_comment.get("comments", [])
             inline_total = inline_comment.get("total", 0)
@@ -426,7 +422,7 @@ class JiraAdapter(Source):
             logger.debug("Failed to load field metadata", exc_info=True)
             self._field_map = {}
 
-    def _find_custom_field(self, fields: dict[str, Any], name: str) -> Any:
+    def _find_custom_field(self, fields: dict[str, Any], name: str) -> str | None:
         if not self._field_map:
             return None
         for field_id, field_name in self._field_map.items():
@@ -480,7 +476,7 @@ class JiraAdapter(Source):
     def _checkpoint_with_overlap(self, checkpoint: str) -> str:
         try:
             dt = datetime.fromisoformat(checkpoint)
-            adjusted = dt - timedelta(minutes=15)
+            adjusted = dt - timedelta(minutes=self._overlap_minutes)
             return adjusted.strftime("%Y-%m-%d %H:%M")
         except ValueError:
             return checkpoint
@@ -491,7 +487,7 @@ class JiraAdapter(Source):
             self._client = None
 
 
-def _nested_name(obj: Any, key: str = "name") -> str:
+def _nested_name(obj: object | None, key: str = "name") -> str:
     if not obj:
         return ""
     if isinstance(obj, dict):
@@ -499,7 +495,7 @@ def _nested_name(obj: Any, key: str = "name") -> str:
     return str(obj)
 
 
-def _render_field_value(val: Any) -> str:
+def _render_field_value(val: object | None) -> str:
     if val is None:
         return ""
     if isinstance(val, str):

@@ -48,20 +48,26 @@ def interactive_init() -> None:
         "sync": {
             "overlap_minutes": 15,
             "reconciliation_days": 7,
-            "max_concurrency": 4,
+            "max_concurrency": 12,
             "large_document_chars": 300000,
         },
         "sources": {},
     }
 
-    # Confluence
     if click.confirm("Add Confluence source?", default=False):
         conf_name = click.prompt("Confluence source name", default=f"{project_id}-wiki")
         conf_url = click.prompt("Confluence base URL (e.g. https://company.atlassian.net)")
         spaces_raw = click.prompt("Space keys (comma-separated)")
         spaces = [s.strip() for s in spaces_raw.split(",") if s.strip()]
-        username = click.prompt("Atlassian username (email)")
         secret_ref = f"workctx/{project_id}/confluence"
+        is_cloud = ".atlassian.net" in conf_url
+
+        auth: dict = {"secret_ref": secret_ref}
+        if is_cloud:
+            auth["mode"] = "api_token"
+            auth["username"] = click.prompt("Atlassian login email")
+        else:
+            auth["mode"] = "pat"
 
         config["sources"]["confluence"] = [
             {
@@ -69,24 +75,26 @@ def interactive_init() -> None:
                 "base_url": conf_url,
                 "deployment": "auto",
                 "spaces": spaces,
-                "auth": {
-                    "mode": "api_token",
-                    "username": username,
-                    "secret_ref": secret_ref,
-                },
+                "auth": auth,
                 "include_attachments": False,
             }
         ]
         console.print(f"  [yellow]Remember:[/yellow] workctx auth set {secret_ref}")
 
-    # Jira
     if click.confirm("Add Jira source?", default=False):
         jira_name = click.prompt("Jira source name", default=f"{project_id}-jira")
         jira_url = click.prompt("Jira base URL (e.g. https://company.atlassian.net)")
         projects_raw = click.prompt("Project keys (comma-separated)")
         projects = [p.strip() for p in projects_raw.split(",") if p.strip()]
-        username = click.prompt("Atlassian username (email)")
         secret_ref = f"workctx/{project_id}/jira"
+        is_cloud = ".atlassian.net" in jira_url
+
+        auth = {"secret_ref": secret_ref}
+        if is_cloud:
+            auth["mode"] = "api_token"
+            auth["username"] = click.prompt("Atlassian login email")
+        else:
+            auth["mode"] = "pat"
 
         config["sources"]["jira"] = [
             {
@@ -94,11 +102,7 @@ def interactive_init() -> None:
                 "base_url": jira_url,
                 "deployment": "auto",
                 "projects": projects,
-                "auth": {
-                    "mode": "api_token",
-                    "username": username,
-                    "secret_ref": secret_ref,
-                },
+                "auth": auth,
                 "include_comments": True,
                 "include_changelog": False,
                 "include_attachments": False,
@@ -106,7 +110,6 @@ def interactive_init() -> None:
         ]
         console.print(f"  [yellow]Remember:[/yellow] workctx auth set {secret_ref}")
 
-    # SharePoint
     if click.confirm("Add SharePoint source?", default=False):
         sp_name = click.prompt("SharePoint source name", default=f"{project_id}-documents")
         local_path = click.prompt("Local OneDrive path to SharePoint library")
@@ -126,8 +129,8 @@ def interactive_init() -> None:
             }
         ]
 
-    # Notifications
-    config["notifications"] = {"macos": {"enabled": True}}
+    import platform as _plat
+    config["notifications"] = {"macos": {"enabled": _plat.system() == "Darwin"}}
     if click.confirm("Enable Telegram notifications?", default=False):
         bot_ref = f"workctx/{project_id}/telegram-bot"
         chat_ref = f"workctx/{project_id}/telegram-chat"
@@ -141,13 +144,11 @@ def interactive_init() -> None:
     else:
         config["notifications"]["telegram"] = {"enabled": False}
 
-    # Schedule
     hour = click.prompt("Schedule hour (24h)", type=int, default=5)
     minute = click.prompt("Schedule minute", type=int, default=30)
     config["schedule"]["hour"] = hour
     config["schedule"]["minute"] = minute
 
-    # Write config
     config_filename = f"{project_id}.yaml"
     config_path = Path.cwd() / config_filename
 
