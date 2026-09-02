@@ -13,6 +13,7 @@ class SourceType(enum.StrEnum):
     CONFLUENCE = "confluence"
     JIRA = "jira"
     SHAREPOINT = "sharepoint"
+    LOCAL_FOLDER = "local_folder"
 
 
 class RunStatus(enum.StrEnum):

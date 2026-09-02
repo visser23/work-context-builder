@@ -152,7 +152,7 @@ class Daemon:
         logger.info("Sync started (run=%s, source=%s, full=%s)", run_id, source, full)
 
         try:
-            result = run_sync(self.config, run_id=run_id, full=full)
+            result = run_sync(self.config, run_id=run_id, full=full, quiet=True)
         except Exception as e:
             msg = f"Sync failed: {e}"
             logger.error(msg, exc_info=True)

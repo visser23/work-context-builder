@@ -51,10 +51,20 @@ class SharePointSource(BaseModel):
     auth: AuthConfig | None = None
 
 
+class LocalFolderSource(BaseModel):
+    name: str
+    paths: list[str]
+    include: list[str] = Field(default_factory=lambda: ["**/*"])
+    exclude: list[str] = Field(
+        default_factory=lambda: ["**/~$*", "**/.DS_Store", "**/*.tmp"]
+    )
+
+
 class SourcesConfig(BaseModel):
     confluence: list[ConfluenceSource] = Field(default_factory=list)
     jira: list[JiraSource] = Field(default_factory=list)
     sharepoint: list[SharePointSource] = Field(default_factory=list)
+    local_folders: list[LocalFolderSource] = Field(default_factory=list)
 
 
 class ScheduleConfig(BaseModel):
@@ -129,6 +139,8 @@ class ProjectConfig(BaseModel):
         for src in self.sources.jira:
             names.append(src.name)
         for src in self.sources.sharepoint:
+            names.append(src.name)
+        for src in self.sources.local_folders:
             names.append(src.name)
         return names
 
