@@ -221,7 +221,7 @@ def auth() -> None:
 @click.argument("secret_ref")
 @click.option("--value", prompt=True, hide_input=True, confirmation_prompt=True)
 def auth_set(secret_ref: str, value: str) -> None:
-    """Store a secret in macOS Keychain."""
+    """Store a secret in the OS credential store."""
     from workctx.secrets import set_secret
 
     set_secret(secret_ref, value)
@@ -231,7 +231,7 @@ def auth_set(secret_ref: str, value: str) -> None:
 @auth.command("remove")
 @click.argument("secret_ref")
 def auth_remove(secret_ref: str) -> None:
-    """Remove a secret from macOS Keychain."""
+    """Remove a secret from the OS credential store."""
     from workctx.secrets import delete_secret
 
     delete_secret(secret_ref)
