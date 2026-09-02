@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
@@ -45,7 +46,8 @@ from workctx.state import StateDB
 
 logger = logging.getLogger(__name__)
 
-MAX_SYNC_WORKERS = 10
+MAX_SYNC_WORKERS = 12
+_HEAVY_CONVERSION_SEMAPHORE = threading.Semaphore(3)
 
 
 def run_sync(
@@ -556,7 +558,12 @@ def _reconcile_source(
 
 
 def _convert_local_file(file_path: Path) -> str | None:
-    """Convert a local file to Markdown using appropriate converter."""
+    """Convert a local file to Markdown using appropriate converter.
+
+    PDF and Office conversions acquire a semaphore so at most 3 heavy
+    conversions run at once — the remaining thread-pool threads stay free
+    for fast I/O (downloads, text reads).
+    """
     from workctx.normalise.convertibility import _TEXT_EXTENSIONS
     from workctx.normalise.office import can_handle as office_handles
     from workctx.normalise.office import convert_office
@@ -564,10 +571,12 @@ def _convert_local_file(file_path: Path) -> str | None:
     from workctx.normalise.pdf import convert_pdf
 
     if pdf_handles(file_path):
-        return convert_pdf(file_path)
+        with _HEAVY_CONVERSION_SEMAPHORE:
+            return convert_pdf(file_path)
 
     if office_handles(file_path):
-        return convert_office(file_path)
+        with _HEAVY_CONVERSION_SEMAPHORE:
+            return convert_office(file_path)
 
     suffix = file_path.suffix.lower()
     if suffix in _TEXT_EXTENSIONS:
@@ -576,7 +585,8 @@ def _convert_local_file(file_path: Path) -> str | None:
         except OSError:
             return None
 
-    result = convert_office(file_path)
+    with _HEAVY_CONVERSION_SEMAPHORE:
+        result = convert_office(file_path)
     if result:
         return result
 

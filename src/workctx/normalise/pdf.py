@@ -1,14 +1,27 @@
-"""PDF conversion using PyMuPDF4LLM with a hard timeout to prevent infinite loops."""
+"""PDF conversion using PyMuPDF4LLM via subprocess with a hard timeout."""
 
 from __future__ import annotations
 
+import json
 import logging
-import multiprocessing
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-CONVERSION_TIMEOUT_SECONDS = 120
+CONVERSION_TIMEOUT_SECONDS = 30
+
+_WORKER_SCRIPT = textwrap.dedent("""\
+    import json, sys
+    try:
+        import pymupdf4llm
+        text = pymupdf4llm.to_markdown(sys.argv[1])
+        json.dump({"ok": True, "text": text.strip() if text else ""}, sys.stdout)
+    except Exception as e:
+        json.dump({"ok": False, "error": str(e)}, sys.stdout)
+""")
 
 
 def can_handle(file_path: Path) -> bool:
@@ -18,66 +31,47 @@ def can_handle(file_path: Path) -> bool:
 def convert_pdf(file_path: Path, *, use_docling_fallback: bool = False) -> str | None:
     """Convert a PDF to Markdown.
 
-    Primary: PyMuPDF4LLM (fast, layout-aware).
-    Runs in a subprocess with a hard timeout to prevent hangs on malformed PDFs.
+    Runs pymupdf4llm in a subprocess with a hard timeout so a hung PDF
+    never blocks the calling thread for more than CONVERSION_TIMEOUT_SECONDS.
     """
-    text = _pymupdf_convert_with_timeout(file_path)
-
-    if text and _quality_ok(text):
-        return text
-
-    if text:
-        return text
-
-    logger.warning("PDF conversion produced no usable text: %s", file_path)
-    return None
-
-
-def _pymupdf_worker(file_path_str: str, result_queue: multiprocessing.Queue) -> None:
-    """Worker function that runs in a subprocess."""
     try:
-        import pymupdf4llm
-
-        text = pymupdf4llm.to_markdown(file_path_str)
-        if text and text.strip():
-            result_queue.put(text.strip())
-        else:
-            result_queue.put(None)
-    except Exception as e:
-        result_queue.put(e)
-
-
-def _pymupdf_convert_with_timeout(file_path: Path) -> str | None:
-    """Run PyMuPDF conversion in a subprocess with a timeout."""
-    ctx = multiprocessing.get_context("spawn")
-    result_queue: multiprocessing.Queue = ctx.Queue()
-    proc = ctx.Process(
-        target=_pymupdf_worker,
-        args=(str(file_path), result_queue),
-        daemon=True,
-    )
-    proc.start()
-    proc.join(timeout=CONVERSION_TIMEOUT_SECONDS)
-
-    if proc.is_alive():
+        proc = subprocess.run(
+            [sys.executable, "-c", _WORKER_SCRIPT, str(file_path)],
+            capture_output=True,
+            text=True,
+            timeout=CONVERSION_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
         logger.warning(
-            "PDF conversion timed out after %ds, killing: %s",
+            "PDF conversion timed out after %ds: %s",
             CONVERSION_TIMEOUT_SECONDS,
             file_path,
         )
-        proc.kill()
-        proc.join(timeout=5)
         return None
 
-    if result_queue.empty():
-        logger.warning("PDF conversion produced no result: %s", file_path)
+    if proc.returncode != 0:
+        logger.error("PDF subprocess failed (rc=%d): %s", proc.returncode, file_path)
         return None
 
-    result = result_queue.get_nowait()
-    if isinstance(result, Exception):
-        logger.error("PyMuPDF4LLM failed: %s — %s", file_path, result)
+    try:
+        result = json.loads(proc.stdout)
+    except (json.JSONDecodeError, ValueError):
+        logger.error("PDF subprocess returned invalid JSON: %s", file_path)
         return None
-    return result
+
+    if not result.get("ok"):
+        logger.error("PyMuPDF4LLM failed: %s — %s", file_path, result.get("error"))
+        return None
+
+    text = result.get("text", "")
+    if not text:
+        logger.warning("PDF conversion produced no usable text: %s", file_path)
+        return None
+
+    if _quality_ok(text):
+        return text
+
+    return text
 
 
 def _quality_ok(text: str) -> bool:
