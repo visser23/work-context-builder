@@ -1,8 +1,8 @@
 # Scratchpad: Work Context Mirror
 
 ## Current Status
-- All core phases complete
-- 138 tests passing, 0 lint errors
+- All core phases complete + LLM integration polish
+- 151 tests passing, 0 lint errors
 - Background daemon with Telegram commands (launchd KeepAlive on macOS)
 - Cross-platform service management (launchd, systemd, Task Scheduler)
 - First-run bootstrap scripts for macOS/Linux and Windows
@@ -10,6 +10,8 @@
 - Cookie keepalive: daemon pings SharePoint every 4h via HTTP, notifies via Telegram on expiry
 - Dedup: uses (source_name, source_id) UNIQUE constraint + source_version + content_sha256
 - Version-only changes (same content hash) now update source_version in DB without file rewrite
+- LLM-optimised output: PROJECT_BRIEF.md, CHATGPT_INSTRUCTIONS.md, CLAUDE.md, AGENTS.md
+- Jira summary: SUMMARY.csv + SUMMARY.md per source for Gantt/status views
 
 ## Architecture Notes
 - SharePoint list name may differ per tenant: "Documents" vs "Shared Documents" — `doc_library` in config
@@ -17,6 +19,10 @@
 - ChangeToken stored in `sync_checkpoints.metadata` (JSON), not `last_checkpoint` (ISO timestamp)
 - Cookie validation: cache-first strategy — lightweight HTTP GET before Playwright launch
 - Playwright uses `wait_until="domcontentloaded"` (not `networkidle`) to avoid SP background request timeouts
+- Checkpoint safety: never advance past failed objects (tracks earliest failure timestamp)
+- Resource cleanup: DB/index/adapters closed in `finally` blocks even on exception
+- SharePoint modes restricted to `onedrive_local` and `browser` (graph/rclone removed as unimplemented)
+- Auth modes restricted to `api_token`, `pat`, `basic`, `browser` (device_code removed as unimplemented)
 
 ## Lessons
 - `fnmatch.fnmatch` treats `**/*` literally. Must strip `**/` prefix.
@@ -35,3 +41,6 @@
 - ChangeToken must be stored separately from `last_checkpoint` (which holds ISO timestamps).
 - When content hash matches but version differs, still update version in DB to prevent repeated re-fetches.
 - Always `uv sync` after code changes before testing via `uv run` to ensure latest build.
+- ChatGPT Projects: 5-40 file limit → single PROJECT_BRIEF.md critical for quick context
+- Claude Projects: RAG handles large corpora, CLAUDE.md should be concise (<200 lines)
+- Dead code removal: html.py converter was unused (HTML goes through MarkItDown), ChangeAction.RENAME never referenced

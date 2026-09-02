@@ -180,6 +180,12 @@ def generate_index_md(config: ProjectConfig, db: StateDB, output_root: Path) -> 
         lines.append(f"- Documents: {count:,}")
         lines.append("")
 
+    for src in config.sources.local_folders:
+        count = db.count_objects(src.name)
+        lines.append(f"### Local Folder: {src.name}")
+        lines.append(f"- Files: {count:,}")
+        lines.append("")
+
     index_path.write_text("\n".join(lines))
 
 
@@ -205,6 +211,8 @@ This corpus mirrors content from the following sources:
         content += f"- **Jira** ({src.name}): projects {', '.join(src.projects)}\n"
     for src in config.sources.sharepoint:
         content += f"- **SharePoint** ({src.name})\n"
+    for src in config.sources.local_folders:
+        content += f"- **Local Folder** ({src.name})\n"
 
     content += """
 ## How to use this corpus
@@ -217,6 +225,20 @@ provenance (source type, source URL, timestamps, version information).
   (a single-file project overview similar to Jira's CSV export — ideal for
   Gantt charts, portfolio views, and quick status reports)
 - `sharepoint/` — one file per converted document
+- `local_folder/` — one file per local file (from configured directories)
+
+## Using with ChatGPT or Claude Projects
+
+This corpus is designed to work with LLM project workspaces:
+
+- **Single-file quick start**: Upload `PROJECT_BRIEF.md` to a ChatGPT or Claude
+  Project for an instant overview with Jira status and source inventory.
+- **Deep context**: Upload individual files from `confluence/`, `jira/`, or
+  `sharepoint/` as needed for specific questions.
+- **Project instructions**: Copy the contents of `CHATGPT_INSTRUCTIONS.md`
+  into your ChatGPT Project instructions, or use `CLAUDE.md` for Claude.
+- **Jira at a glance**: Upload `jira/*/SUMMARY.csv` for tabular project data
+  (Gantt charts, burndown, status reporting).
 
 ## Timestamps
 
@@ -267,45 +289,151 @@ You have access to a synchronised mirror of project knowledge.
 
 
 def generate_claude_md(config: ProjectConfig, output_root: Path) -> None:
-    """Generate CLAUDE.md — guidance for Claude Code."""
-    content = f"""# {config.project.name} — Claude Code Instructions
+    """Generate CLAUDE.md — concise context file for Claude Code sessions."""
+    content = f"""# {config.project.name}
 
-This directory contains automatically synchronised project knowledge from
-Confluence, Jira, and SharePoint.
+Synchronised project knowledge from Confluence, Jira, and SharePoint.
+Updated automatically by Work Context Mirror.
 
-## Using this corpus
+## Layout
 
-- Inspect files before making project-specific claims
-- Each Markdown file has YAML front matter with `source_url`, `updated_at`,
-  and other provenance fields
-- **For project status or Gantt charts**, read `jira/*/SUMMARY.csv` or
-  `jira/*/SUMMARY.md` first — one row per issue with key fields
-- Prefer primary source documents (design docs, specs) over issue trackers
-  for architectural decisions
-- Consider timestamps: content may be outdated
-- The `_meta/INDEX.md` provides an overview of all sources and counts
+- `confluence/` — wiki pages (Markdown with YAML front matter)
+- `jira/` — issues with comments; `SUMMARY.csv` for tabular overview
+- `sharepoint/` — converted documents (Office, PDF → Markdown)
+- `local_folder/` — local files from configured directories
+- `_meta/` — INDEX.md, health.json, manifest.jsonl
 
-## Structure
+## Key files
 
-- `confluence/` — wiki pages (one per file)
-- `jira/` — issues with comments (one per file), plus `SUMMARY.csv`/`SUMMARY.md`
-- `sharepoint/` — converted documents (one per file)
-- `_meta/` — index, manifest, and health status
+- `jira/*/SUMMARY.csv` — all Jira issues in one CSV (Gantt, status reports)
+- `jira/*/SUMMARY.md` — same data as a Markdown table
+- `_meta/INDEX.md` — source counts and last sync time
+- `PROJECT_BRIEF.md` — single-file overview for quick context
 
-## Searching
+## Rules
 
-Use ripgrep or the filesystem to find relevant content:
-```
-rg "supplier onboarding" confluence/ jira/
-```
-
-Or use the workctx search command if available:
-```
-workctx search "supplier onboarding"
-```
+- Every Markdown file has YAML front matter with `source_url` and `updated_at`
+- Always cite `source_url` when referencing project information
+- Check `updated_at` — older content may be superseded by newer
+- Prefer design docs and specs over issue tracker descriptions
+- Never fabricate project information; say "not found in corpus" if absent
+- Use `rg` to search across the corpus: `rg "search term" confluence/ jira/`
 """
 
     write_corpus_file(output_root, "CLAUDE.md", content)
+
+
+def generate_chatgpt_instructions(config: ProjectConfig, output_root: Path) -> None:
+    """Generate CHATGPT_INSTRUCTIONS.md — ready-to-paste ChatGPT Project instructions."""
+    sources = []
+    for src in config.sources.confluence:
+        sources.append(f"Confluence ({', '.join(src.spaces)})")
+    for src in config.sources.jira:
+        sources.append(f"Jira ({', '.join(src.projects)})")
+    for src in config.sources.sharepoint:
+        sources.append(f"SharePoint ({src.name})")
+
+    source_list = ", ".join(sources) if sources else "multiple sources"
+
+    content = f"""# ChatGPT Project Instructions for {config.project.name}
+
+> Copy everything below the line into your ChatGPT Project's
+> "Custom Instructions" field. Then upload `PROJECT_BRIEF.md` and any
+> other relevant files from this corpus as project files.
+
+---
+
+You are a knowledgeable assistant for the {config.project.name} project.
+You have access to uploaded project files from {source_list}.
+
+When answering questions about this project:
+- Base answers on the uploaded files, not general knowledge
+- Cite the specific file and source URL when referencing information
+- Check the `updated_at` field in file headers to judge recency
+- For project status or Gantt charts, use SUMMARY.csv data
+- If information is not in the uploaded files, say so clearly
+- Distinguish between decisions, proposals, and drafts
+- When information conflicts across sources, flag both versions
+
+The uploaded files are Markdown with YAML front matter containing:
+- `source_type` / `source_name` — where the content came from
+- `source_url` — direct link to the original
+- `updated_at` — when the source was last modified
+- `synced_at` — when the mirror last processed it
+
+For project status overviews, refer to SUMMARY.csv or SUMMARY.md files.
+For detailed issue context, refer to individual Jira issue files.
+For technical documentation, refer to Confluence and SharePoint files.
+"""
+
+    write_corpus_file(output_root, "CHATGPT_INSTRUCTIONS.md", content)
+
+
+def generate_project_brief(
+    config: ProjectConfig, db: StateDB, output_root: Path
+) -> None:
+    """Generate PROJECT_BRIEF.md — single-file overview for LLM project uploads."""
+    now = datetime.now(UTC).strftime("%d %b %Y %H:%M UTC")
+    lines = [
+        f"# {config.project.name} — Project Brief",
+        "",
+        f"*Auto-generated on {now} by Work Context Mirror.*",
+        "",
+        "Upload this single file to a ChatGPT or Claude Project for instant",
+        "project context. For deeper questions, upload individual source files.",
+        "",
+        "---",
+        "",
+        "## Sources",
+        "",
+    ]
+
+    total = 0
+    for src in config.sources.confluence:
+        count = db.count_objects(src.name)
+        total += count
+        spaces = ", ".join(src.spaces)
+        lines.append(f"- **Confluence** ({src.name}): {count:,} pages from spaces {spaces}")
+    for src in config.sources.jira:
+        count = db.count_objects(src.name)
+        total += count
+        projects = ", ".join(src.projects)
+        lines.append(f"- **Jira** ({src.name}): {count:,} issues from projects {projects}")
+    for src in config.sources.sharepoint:
+        count = db.count_objects(src.name)
+        total += count
+        lines.append(f"- **SharePoint** ({src.name}): {count:,} documents")
+    for src in config.sources.local_folders:
+        count = db.count_objects(src.name)
+        total += count
+        lines.append(f"- **Local** ({src.name}): {count:,} files")
+
+    lines.extend(["", f"**Total: {total:,} indexed objects**", ""])
+
+    # Embed Jira summary tables directly
+    for jira_cfg in config.sources.jira:
+        summary_path = output_root / "jira" / jira_cfg.name / "SUMMARY.md"
+        if summary_path.exists():
+            lines.extend(["---", ""])
+            lines.append(summary_path.read_text(encoding="utf-8").strip())
+            lines.append("")
+
+    lines.extend([
+        "---",
+        "",
+        "## How to use this with your AI assistant",
+        "",
+        "1. **Quick questions**: Upload just this file for project-wide context",
+        "2. **Status reports / Gantt**: Ask about the Jira summary table above",
+        "3. **Deep dives**: Upload specific files from `confluence/`, `jira/`, or `sharepoint/`",
+        "4. **Technical details**: Upload the relevant SharePoint or Confluence documents",
+        "",
+        "Each source file is Markdown with YAML front matter containing `source_url`",
+        "(link to original), `updated_at` (last modified), and `source_version`.",
+        "",
+    ])
+
+    write_corpus_file(output_root, "PROJECT_BRIEF.md", "\n".join(lines))
 
 
 def generate_readme(config: ProjectConfig, output_root: Path) -> None:
@@ -314,11 +442,25 @@ def generate_readme(config: ProjectConfig, output_root: Path) -> None:
 
 Automatically synchronised project knowledge mirror.
 
-See `CONTEXT.md` for details about this corpus.
-See `AGENTS.md` or `CLAUDE.md` for AI agent guidance.
-See `_meta/INDEX.md` for source overview and counts.
+## Quick start with AI assistants
 
-Generated by [Work Context Mirror](https://github.com/work-context-mirror).
+| File | Purpose |
+|------|---------|
+| `PROJECT_BRIEF.md` | **Start here** — upload to ChatGPT/Claude for instant context |
+| `CHATGPT_INSTRUCTIONS.md` | Ready-to-paste Custom Instructions for ChatGPT Projects |
+| `CLAUDE.md` | Context file for Claude Code / Claude Projects |
+| `AGENTS.md` | Guidance for Codex-style and other coding agents |
+| `CONTEXT.md` | Detailed corpus description and usage guide |
+
+## Contents
+
+- `confluence/` — wiki pages
+- `jira/` — issues + `SUMMARY.csv`/`SUMMARY.md` for project overviews
+- `sharepoint/` — converted documents
+- `local_folder/` — local files from configured directories
+- `_meta/` — index, manifest, health status
+
+Generated by [Work Context Mirror](https://github.com/visser23/work-context-builder).
 """
 
     write_corpus_file(output_root, "README.md", content)

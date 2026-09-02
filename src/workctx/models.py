@@ -58,7 +58,6 @@ class ChangeAction(enum.StrEnum):
     ADD = "add"
     UPDATE = "update"
     DELETE = "delete"
-    RENAME = "rename"
 
 
 class DiscoveredChange(BaseModel):

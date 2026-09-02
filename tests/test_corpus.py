@@ -10,7 +10,9 @@ from workctx.corpus import (
     _extract_jira_details,
     _md_escape,
     build_output_path,
+    generate_chatgpt_instructions,
     generate_jira_summary,
+    generate_project_brief,
     remove_corpus_file,
     write_corpus_file,
 )
@@ -221,3 +223,54 @@ class TestGenerateJiraSummary:
         assert "PROJ-1" in md_content
         assert "Fix login" in md_content
         assert "1 issues" in md_content
+
+
+class TestGenerateChatgptInstructions:
+    def test_generates_file(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        output_root = tmp_path / "output"
+        output_root.mkdir()
+
+        mock_config = MagicMock()
+        mock_config.project.name = "Test Project"
+        mock_config.sources.confluence = [MagicMock(spaces=["ENG"])]
+        mock_config.sources.jira = [MagicMock(projects=["PROJ"])]
+        mock_config.sources.sharepoint = [MagicMock(name="docs")]
+        mock_config.sources.local_folders = []
+
+        generate_chatgpt_instructions(mock_config, output_root)
+
+        path = output_root / "CHATGPT_INSTRUCTIONS.md"
+        assert path.exists()
+        content = path.read_text()
+        assert "Test Project" in content
+        assert "Confluence" in content
+        assert "source_url" in content
+
+
+class TestGenerateProjectBrief:
+    def test_generates_file_with_counts(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        output_root = tmp_path / "output"
+        output_root.mkdir()
+
+        mock_config = MagicMock()
+        mock_config.project.name = "My Project"
+        mock_config.sources.confluence = [MagicMock(name="wiki", spaces=["ENG"])]
+        mock_config.sources.jira = [MagicMock(name="jira", projects=["PROJ"])]
+        mock_config.sources.sharepoint = [MagicMock(name="docs")]
+        mock_config.sources.local_folders = []
+
+        mock_db = MagicMock()
+        mock_db.count_objects.return_value = 42
+
+        generate_project_brief(mock_config, mock_db, output_root)
+
+        path = output_root / "PROJECT_BRIEF.md"
+        assert path.exists()
+        content = path.read_text()
+        assert "My Project" in content
+        assert "126" in content  # 42 * 3 sources
+        assert "Upload this single file" in content

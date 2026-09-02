@@ -495,9 +495,11 @@ running from the repo directory.
 
 ```
 <output_root>/
+├── PROJECT_BRIEF.md              Single-file overview — upload this first
+├── CHATGPT_INSTRUCTIONS.md       Ready-to-paste ChatGPT Project instructions
 ├── CONTEXT.md                    Corpus overview for humans & LLMs
 ├── AGENTS.md                     Guidance for Codex-style agents
-├── CLAUDE.md                     Guidance for Claude Code
+├── CLAUDE.md                     Context for Claude Code / Claude Projects
 ├── README.md                     Auto-generated summary
 ├── _meta/
 │   ├── INDEX.md                  Source overview with counts
@@ -524,6 +526,45 @@ synced_at: "2026-09-01T05:00:00Z"
 content_sha256: "abc123..."
 ---
 ```
+
+---
+
+## Using With AI Assistants
+
+The corpus is designed for three usage patterns:
+
+### ChatGPT Projects
+
+1. Create a new ChatGPT Project
+2. Copy the contents of `CHATGPT_INSTRUCTIONS.md` into the project's Custom Instructions
+3. Upload `PROJECT_BRIEF.md` as a project file (gives instant overview)
+4. Upload `jira/*/SUMMARY.csv` for project status / Gantt data
+5. Upload specific Confluence or SharePoint files as needed
+
+The file limit (5–40 depending on plan) means you can't upload everything.
+Start with `PROJECT_BRIEF.md` and add source files as questions arise.
+On paid plans, RAG handles larger uploads automatically.
+
+### Claude Projects
+
+1. Create a new Claude Project
+2. Upload `CLAUDE.md` (or paste its contents into project instructions)
+3. Upload `PROJECT_BRIEF.md` for broad context
+4. Add source files as needed — Claude's RAG on paid plans handles large corpora
+
+### Claude Code / Cursor / Codex
+
+If your output directory is inside or adjacent to a code repository:
+- `CLAUDE.md` is automatically picked up by Claude Code at session start
+- `AGENTS.md` provides guidance for Codex and similar coding agents
+- Use `rg` or `workctx search` to find relevant content from within the agent
+
+### Keeping context fresh
+
+The background daemon syncs daily. After each sync, all generated files
+(`PROJECT_BRIEF.md`, `CLAUDE.md`, `SUMMARY.csv`, etc.) are regenerated
+with current data. If your AI assistant doesn't auto-refresh files,
+re-upload the updated versions periodically.
 
 ---
 
@@ -612,7 +653,7 @@ You can override this with `state_dir` in your config.
 
 ```bash
 uv sync --extra dev
-uv run pytest                    # 149 tests
+uv run pytest                    # 151 tests
 uv run ruff check src/ tests/   # lint
 uv run ruff format src/ tests/  # format
 ```

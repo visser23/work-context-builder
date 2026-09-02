@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class AuthConfig(BaseModel):
-    mode: Literal["api_token", "pat", "basic", "device_code", "browser"] = "api_token"
+    mode: Literal["api_token", "pat", "basic", "browser"] = "api_token"
     username: str | None = None
     secret_ref: str | None = None
 
@@ -40,7 +40,7 @@ class JiraSource(BaseModel):
 class SharePointSource(BaseModel):
     name: str
     site_url: str | None = None
-    mode: Literal["onedrive_local", "graph", "rclone", "browser"] = "onedrive_local"
+    mode: Literal["onedrive_local", "browser"] = "onedrive_local"
     local_path: str | None = None
     doc_library: str = "Shared Documents"
     server_relative_path: str | None = None

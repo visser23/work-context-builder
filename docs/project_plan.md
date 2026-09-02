@@ -72,9 +72,6 @@
 ## Phase 7: Extended Modes
 - [x] Atlassian Data Center support (auto-detection, PAT auth)
 - [x] Playwright SharePoint browser mode (cookie capture + REST API)
-- [ ] Microsoft Graph SharePoint mode
-- [ ] rclone SharePoint mode
-- [ ] Docling PDF fallback
 
 ## Phase 8: Background Daemon
 - [x] Background daemon with daily sync
@@ -93,6 +90,24 @@
 - [x] Fixed GetChanges Edm.Int64 error (removed FetchLimit parameter)
 - [x] doc_library config correctly distinguishes list title from folder path
 
+## Phase 10: Jira Summary & Reporting
+- [x] Jira SUMMARY.csv generation (per source, CSV export style)
+- [x] Jira SUMMARY.md generation (Markdown table format)
+- [x] Integration into sync pipeline
+- [x] Automated tests for extraction, cleaning, escaping, and generation
+
+## Phase 11: LLM Project Integration & Code Quality
+- [x] PROJECT_BRIEF.md — single-file overview for ChatGPT/Claude project uploads
+- [x] CHATGPT_INSTRUCTIONS.md — ready-to-paste project instructions
+- [x] Enhanced CLAUDE.md following 2026 best practices (concise, structured)
+- [x] Local folder sources included in all generated context files
+- [x] Checkpoint safety: never advance past failed objects
+- [x] Resource cleanup: DB/index/adapter close() in finally blocks
+- [x] Removed unimplemented modes (graph, rclone, device_code)
+- [x] Removed dead code (html.py converter, ChangeAction.RENAME)
+- [x] Code review and quality improvements
+- [x] 151 tests passing, 0 lint errors
+
 ## Documentation
 - [x] README.md (installation → first sync)
 - [x] Example configuration file
@@ -101,3 +116,4 @@
 - [x] Telegram setup instructions (in README)
 - [x] Troubleshooting guide (in README)
 - [x] AI-assistant configuration prompt template
+- [x] "Using with AI Assistants" section in README (ChatGPT, Claude, Cursor/Codex)
