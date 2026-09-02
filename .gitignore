@@ -30,8 +30,8 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Browser state (Playwright)
-auth/
+# Browser state (Playwright profiles, NOT src/workctx/auth/)
+/auth/
 
 # Temp conversion files
 tmp/
