@@ -13,8 +13,9 @@ SERVICE_NAME = "WorkContextMirror"
 def get_secret(secret_ref: str) -> str | None:
     """Retrieve a secret by its logical reference.
 
-    Tries macOS Keychain first, then falls back to environment variables
-    (useful for development/CI).
+    Tries the OS credential store first (Keychain on macOS, Credential
+    Locker on Windows, Secret Service on Linux), then falls back to
+    environment variables (useful for development/CI).
     """
     env_key = _ref_to_env_key(secret_ref)
     env_val = os.environ.get(env_key)
@@ -34,7 +35,7 @@ def get_secret(secret_ref: str) -> str | None:
 
 
 def set_secret(secret_ref: str, value: str) -> None:
-    """Store a secret in macOS Keychain."""
+    """Store a secret in the OS credential store."""
     import keyring
 
     keyring.set_password(SERVICE_NAME, secret_ref, value)
@@ -42,7 +43,7 @@ def set_secret(secret_ref: str, value: str) -> None:
 
 
 def delete_secret(secret_ref: str) -> None:
-    """Remove a secret from macOS Keychain."""
+    """Remove a secret from the OS credential store."""
     import keyring
 
     try:
