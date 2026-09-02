@@ -142,9 +142,23 @@ class JiraAdapter(Source):
 
         known = {obj.source_id: obj for obj in db.get_objects_for_source(self.name)}
 
+        # Request only the fields we use — drastically reduces payload and
+        # server-side processing time on DC instances
+        needed_fields = [
+            "summary", "updated", "project", "status", "issuetype",
+            "priority", "resolution", "reporter", "assignee", "created",
+            "labels", "components", "fixVersions", "description",
+            "issuelinks", "attachment", "comment", "parent",
+        ]
+        # Include custom fields (sprint, epic) if field map loaded
+        if self._field_map:
+            needed_fields.extend(
+                fid for fid in self._field_map.values() if fid.startswith("customfield_")
+            )
+
         while True:
             logger.info("Jira/%s: fetching page at offset %d", self.name, start_at)
-            data = self._search(client, jql, start_at)
+            data = self._search(client, jql, start_at, fields=needed_fields)
             total = data.get("total", 0)
             issues = data.get("issues", [])
             if not issues:
