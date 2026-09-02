@@ -319,6 +319,14 @@ def _handle_upsert(
     output_root: Path,
 ) -> None:
     """Process an add or update change."""
+    label = change.source_key or change.title or change.source_id
+    logger.info(
+        "%s/%s: processing %s",
+        source.source_type.value,
+        source.name,
+        label[:120],
+    )
+
     body_md: str | None = None
     is_stub = False
 
@@ -334,6 +342,9 @@ def _handle_upsert(
     if not body_md:
         is_stub = True
         body_md = _make_unsupported_stub(change) if change.local_path else _make_empty_stub(change)
+        logger.debug(
+            "%s/%s: %s → stub", source.source_type.value, source.name, label[:80],
+        )
 
     space = change.metadata.get("space")
     project = change.metadata.get("project")
@@ -378,6 +389,7 @@ def _handle_upsert(
     if existing and existing.content_sha256 == c_hash:
         if existing.source_version != change.source_version:
             db.update_version(source.name, change.source_id, change.source_version)
+        logger.debug("%s/%s: %s → unchanged", source.source_type.value, source.name, label[:80])
         return
 
     parts = split_large_document(fm, body_md, config.sync.large_document_chars, output_path)
