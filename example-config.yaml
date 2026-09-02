@@ -1,9 +1,15 @@
 version: 1
 
 project:
-  id: "programme-alpha"
-  name: "Programme Alpha"
-  output_root: "~/Library/CloudStorage/OneDrive-Company/WorkContext/ProgrammeAlpha"
+  id: "my-project"
+  name: "My Project"
+  # macOS:   ~/Documents/WorkContext/my-project
+  # Linux:   ~/work-context/my-project
+  # Windows: ~/OneDrive - Company/WorkContext/my-project
+  output_root: "~/Documents/WorkContext/my-project"
+  # Optional: override default state directory (DB, logs, lock file).
+  # If omitted, defaults to platform-specific app data location.
+  # state_dir: "~/Documents/WorkContext/my-project/_state"
 
 schedule:
   hour: 5
@@ -17,76 +23,91 @@ sync:
 
 sources:
 
+  # ──────────────────────────────────────────────────────────
+  # Confluence — supports both Cloud (.atlassian.net) and Data Center
+  # ──────────────────────────────────────────────────────────
   confluence:
-    - name: "programme-wiki"
-      base_url: "https://company.atlassian.net"
-      deployment: "auto"
+    - name: "my-wiki"
+      base_url: "https://company.atlassian.net"   # or https://confluence.internal.com
+      deployment: "auto"                           # auto | cloud | datacenter
       spaces:
-        - "ALPHA"
+        - "PROJ"
         - "ARCH"
       auth:
-        mode: "api_token"
-        username: "user@company.com"
-        secret_ref: "workctx/programme-alpha/confluence"
+        mode: "api_token"       # Cloud: api_token, DC: pat
+        username: "user@company.com"  # Cloud only — omit for DC PAT
+        secret_ref: "workctx/my-project/confluence"
       include_attachments: false
 
+  # ──────────────────────────────────────────────────────────
+  # Jira — supports both Cloud (.atlassian.net) and Data Center
+  # ──────────────────────────────────────────────────────────
   jira:
-    - name: "programme-jira"
-      base_url: "https://company.atlassian.net"
-      deployment: "auto"
+    - name: "my-jira"
+      base_url: "https://company.atlassian.net"   # or https://jira.internal.com
+      deployment: "auto"                           # auto | cloud | datacenter
       projects:
-        - "ALPHA"
-        - "ARCH"
+        - "PROJ"
+        - "OPS"
       auth:
-        mode: "api_token"
-        username: "user@company.com"
-        secret_ref: "workctx/programme-alpha/jira"
+        mode: "api_token"       # Cloud: api_token, DC: pat
+        username: "user@company.com"  # Cloud only — omit for DC PAT
+        secret_ref: "workctx/my-project/jira"
       include_comments: true
       include_changelog: false
       include_attachments: false
 
+  # ──────────────────────────────────────────────────────────
+  # SharePoint — two modes depending on your setup
+  # ──────────────────────────────────────────────────────────
   sharepoint:
-    # Option A: OneDrive local sync (if library is synced to machine)
-    - name: "programme-documents"
-      site_url: "https://tenant.sharepoint.com/sites/ProgrammeAlpha"
-      mode: "onedrive_local"
-      local_path: "~/Library/CloudStorage/OneDrive-Company/Programme Alpha/Documents"
-      # Windows: "C:/Users/you/OneDrive - Company/Programme Alpha/Documents"
-      include:
-        - "**/*"
-      exclude:
-        - "**/~$*"
-        - "**/.DS_Store"
-        - "**/*.tmp"
 
-    # Option B: Browser-based (no local sync needed)
-    - name: "team-sharepoint"
-      site_url: "https://tenant.sharepoint.com/sites/TeamSite"
-      mode: "browser"
-      doc_library: "Shared Documents"
-      server_relative_path: "/sites/TeamSite/Shared Documents/SubFolder"
+    # Option A: OneDrive local sync (if library is synced to your machine).
+    # This is the preferred mode — no browser automation needed.
+    - name: "my-documents"
+      site_url: "https://tenant.sharepoint.com/sites/MySite"
+      mode: "onedrive_local"
+      local_path: "~/Library/CloudStorage/OneDrive-Company/MySite/Documents"
+      # Windows: "C:/Users/you/OneDrive - Company/MySite/Documents"
       include: ["**/*"]
       exclude: ["**/~$*", "**/.DS_Store", "**/*.tmp"]
-      auth:
-        mode: browser
-        secret_ref: "sp-cookies"
-      # First run: workctx auth login-sharepoint --source team-sharepoint
 
-  # Local folders (any directories on your filesystem)
-  local_folders:
-    - name: "project-files"
-      paths:
-        - "~/Documents/Projects"
-        - "~/Library/CloudStorage/OneDrive-Company/Shared"
-      include: ["**/*"]
-      exclude: ["**/node_modules/**", "**/.git/**", "**/dist/**"]
+    # Option B: Browser-based (for libraries NOT synced locally).
+    # Uses Playwright to capture SharePoint session cookies.
+    # First run: workctx auth login-sharepoint --source team-sharepoint
+    # - name: "team-sharepoint"
+    #   site_url: "https://tenant.sharepoint.com/sites/TeamSite"
+    #   mode: "browser"
+    #   doc_library: "Shared Documents"
+    #   server_relative_path: "/sites/TeamSite/Shared Documents"
+    #   include: ["**/*"]
+    #   exclude: ["**/~$*", "**/.DS_Store", "**/*.tmp"]
+    #   auth:
+    #     mode: browser
+    #     secret_ref: "workctx/my-project/sp-cookies"
 
+  # ──────────────────────────────────────────────────────────
+  # Local folders — scan any directories on your filesystem
+  # ──────────────────────────────────────────────────────────
+  # local_folders:
+  #   - name: "project-files"
+  #     paths:
+  #       - "~/Documents/Projects"
+  #       - "~/OneDrive/SharedDocs"
+  #     include: ["**/*"]
+  #     exclude: ["**/node_modules/**", "**/.git/**", "**/dist/**"]
+
+# ──────────────────────────────────────────────────────────
+# Notifications (optional)
+# ──────────────────────────────────────────────────────────
 notifications:
-
   telegram:
-    enabled: true
-    bot_token_ref: "workctx/telegram/bot"
-    chat_id_ref: "workctx/telegram/chat"
+    enabled: false
+    # To enable: create a bot via @BotFather, store the token:
+    #   workctx auth set workctx/my-project/telegram-bot
+    #   workctx auth set workctx/my-project/telegram-chat
+    # bot_token_ref: "workctx/my-project/telegram-bot"
+    # chat_id_ref: "workctx/my-project/telegram-chat"
 
   macos:
-    enabled: true
+    enabled: true    # macOS notification centre alerts on failure

@@ -28,9 +28,13 @@ def interactive_init() -> None:
         default=project_name.lower().replace(" ", "-"),
     )
 
-    default_output = str(
-        Path.home() / "Library" / "CloudStorage" / "OneDrive-Company" / "WorkContext" / project_id
-    )
+    import platform
+
+    system = platform.system()
+    if system in ("Darwin", "Windows"):
+        default_output = str(Path.home() / "Documents" / "WorkContext" / project_id)
+    else:
+        default_output = str(Path.home() / "work-context" / project_id)
     output_root = click.prompt("Output directory", type=str, default=default_output)
 
     config: dict = {
@@ -156,5 +160,5 @@ def interactive_init() -> None:
     console.print("Next steps:")
     console.print("  1. Store secrets: workctx auth set <secret_ref>")
     console.print(f"  2. Validate: workctx doctor --config {config_filename}")
-    console.print(f"  3. Initial sync: workctx sync --config {config_filename}")
-    console.print(f"  4. Schedule: workctx install-schedule --config {config_filename}")
+    console.print(f"  3. Initial sync: workctx sync --config {config_filename} --full")
+    console.print(f"  4. Background daemon: workctx install-service --config {config_filename}")

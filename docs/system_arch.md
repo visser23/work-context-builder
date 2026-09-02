@@ -81,9 +81,20 @@ src/workctx/
 │                            ├── PID-based lock file
 │                            └── Stale lock detection
 │
-├── scheduler.py ─────────── launchd management
-│                            ├── Plist generation
-│                            └── Install / remove / status
+├── scheduler.py ─────────── Service management
+│                            ├── macOS launchd (KeepAlive daemon)
+│                            ├── Linux systemd (user service)
+│                            ├── Windows Task Scheduler
+│                            └── Legacy fixed-time schedule
+│
+├── daemon.py ────────────── Background daemon
+│                            ├── Daily sync trigger (24h interval)
+│                            ├── Telegram command polling
+│                            └── On-demand sync via /sync, /syncfull
+│
+├── progress.py ──────────── Rich progress display
+│                            ├── Per-source progress bars with ETA
+│                            └── Summary table
 │
 ├── notifications.py ─────── Alert dispatch
 │                            ├── Telegram Bot API
@@ -101,14 +112,18 @@ src/workctx/
     ├── base.py ──────────── Source protocol (abstract interface)
     ├── confluence.py ────── Confluence Cloud/DC adapter
     ├── jira.py ──────────── Jira Cloud/DC adapter
-    └── sharepoint.py ────── SharePoint modes (local, Graph, rclone, Playwright)
+    ├── sharepoint.py ────── SharePoint local (OneDrive) mode
+    ├── sharepoint_web.py ── SharePoint browser mode (REST API)
+    └── local_folder.py ──── Local filesystem directory scanner
 ```
 
 ## Storage Layout
 
 ```
-Runtime State (local only — NOT in OneDrive):
-~/Library/Application Support/WorkContextMirror/<project-id>/
+Runtime State (platform-dependent, or overridden via state_dir):
+macOS:   ~/Library/Application Support/WorkContextMirror/<project-id>/
+Linux:   ~/.local/share/WorkContextMirror/<project-id>/
+Windows: ~/AppData/Local/WorkContextMirror/<project-id>/
 ├── state.sqlite          # Source objects, checkpoints, FTS5
 ├── logs/                 # Rotating log files
 │   └── 20260901-053001.log

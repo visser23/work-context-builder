@@ -69,12 +69,21 @@
 - [x] workctx init (interactive config generation)
 - [x] Tests for Phase 6
 
-## Phase 7: Optional Fallbacks (deferred)
-- [ ] Atlassian Data Center variants
-- [ ] Playwright SharePoint fallback
+## Phase 7: Extended Modes
+- [x] Atlassian Data Center support (auto-detection, PAT auth)
+- [x] Playwright SharePoint browser mode (cookie capture + REST API)
 - [ ] Microsoft Graph SharePoint mode
 - [ ] rclone SharePoint mode
 - [ ] Docling PDF fallback
+
+## Phase 8: Background Daemon
+- [x] Background daemon with daily sync
+- [x] Telegram command polling (/sync, /syncfull, /status, /help)
+- [x] Cross-platform service management (launchd, systemd, Task Scheduler)
+- [x] Local folder source adapter
+- [x] Rich progress display with ETA
+- [x] Skip-before-download for unconvertible files
+- [x] First-run bootstrap scripts (setup.sh, setup.ps1)
 
 ## Documentation
 - [x] README.md (installation → first sync)

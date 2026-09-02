@@ -1,75 +1,38 @@
 # Work Context Mirror
 
-Cross-platform tool that creates and continuously maintains a local,
-LLM-friendly mirror of work knowledge from Confluence, Jira, and
-SharePoint/OneDrive.
+Cross-platform tool that creates and maintains a local, LLM-friendly
+mirror of work knowledge from Confluence, Jira, SharePoint, and local
+folders.
 
-Configure a project once, and a background daemon keeps an automatically
-refreshed body of project knowledge that ChatGPT, Codex, Claude Code,
-or similar tools can interrogate directly from the filesystem. Trigger
-syncs on-demand from Telegram or let the daemon handle it daily.
+Configure a project once and a background daemon keeps your knowledge
+corpus continuously refreshed. ChatGPT, Codex, Claude Code, or any
+LLM with filesystem access can then interrogate current project context
+directly from clean Markdown files.
 
-**Supports:** macOS, Windows, Linux | Python 3.12+
+**Platforms:** macOS, Windows, Linux &nbsp;|&nbsp; **Runtime:** Python 3.12+
 
 ## How It Works
 
 ```
-Confluence (Cloud / Data Center)
-Jira       (Cloud / Data Center)
-SharePoint (OneDrive sync or browser-based)
-            |
-            v
-   Work Context Mirror
-   (background daemon)
-            |
-            v
-   Clean Markdown corpus        <--- Telegram: /sync, /status
-   with YAML front matter
-            |
-     +------+------+
-     v      v      v
-  ChatGPT  Codex  Claude
+Confluence  ─┐
+Jira        ─┤     Work Context Mirror      ┌── ChatGPT
+SharePoint  ─┤──>  (background daemon)  ──>  ├── Codex
+Local files ─┘     daily + on-demand         └── Claude Code
+                         ▲
+                   Telegram: /sync /status
 ```
 
-- **Confluence** pages -> individual Markdown files with metadata
-- **Jira** issues -> Markdown files including comments, links, custom fields
-- **SharePoint** documents (Word, PDF, Excel, and 60+ formats) -> converted Markdown
-- **Local folders** — point at any directory (OneDrive, project files, etc.)
-- Background daemon syncs daily and accepts Telegram commands
-- Only changed content is reprocessed on incremental syncs
+- **Confluence** pages become individual Markdown files with full metadata
+- **Jira** issues become Markdown with comments, links, and custom fields
+- **SharePoint** documents (Word, Excel, PDF, 60+ formats) are converted to Markdown
+- **Local folders** are scanned recursively (OneDrive, project directories, etc.)
+- A background daemon syncs daily; trigger on-demand via Telegram or CLI
+- Only changed content is reprocessed (incremental sync)
 - Unconvertible files (video, images, binaries) are detected and skipped before download
-- Real-time progress bars with ETA during sync
 
-## First-Run Setup
+## Quick Start
 
-The easiest way to get started — run the setup script:
-
-### macOS / Linux
-
-```bash
-git clone https://github.com/visser23/work-context-builder.git
-cd work-context-builder
-bash setup.sh
-```
-
-### Windows (PowerShell)
-
-```powershell
-git clone https://github.com/visser23/work-context-builder.git
-cd work-context-builder
-.\setup.ps1
-```
-
-The setup script checks prerequisites, installs dependencies, walks you
-through configuration, validates the setup, and optionally runs the first
-sync and installs the background daemon.
-
-## Manual Installation
-
-### Prerequisites
-
-- Python 3.12 or later
-- [uv](https://docs.astral.sh/uv/) (recommended) or pip
+### 1. Install
 
 ```bash
 git clone https://github.com/visser23/work-context-builder.git
@@ -77,237 +40,203 @@ cd work-context-builder
 uv sync
 ```
 
-### Optional dependencies
+Or use the guided setup script:
 
 ```bash
-# SharePoint browser-based access (cookie capture)
-uv pip install playwright
-playwright install chromium
-
-# PDF conversion (included by default, but if missing)
-uv pip install pymupdf4llm
+bash setup.sh        # macOS / Linux
+.\setup.ps1          # Windows (PowerShell)
 ```
 
-## Quick Start
+### 2. Configure
 
 ```bash
-# Interactive setup (generates a YAML config)
-uv run workctx init
-
-# Store secrets in your OS credential store
-uv run workctx auth set my-confluence-pat
-uv run workctx auth set my-jira-pat
-
-# Validate everything
-uv run workctx doctor --config workctx.yaml
-
-# First sync
-uv run workctx sync --config workctx.yaml --full
-
-# Install background daemon (syncs daily, accepts Telegram commands)
-uv run workctx install-service --config workctx.yaml
+uv run workctx init                 # interactive config generator
+uv run workctx auth set my-token    # store secret in OS credential store
+uv run workctx doctor               # validate everything
 ```
 
-## Background Daemon
+Or copy `example-config.yaml`, edit it, and store your secrets manually.
 
-The daemon runs as a persistent background service. It:
-
-- Syncs automatically once every 24 hours when the machine is on
-- Accepts Telegram commands (`/sync`, `/status`, `/help`)
-- Restarts automatically if the process crashes
-- Starts on login (no manual intervention needed)
-
-### Install the Service
+### 3. Sync
 
 ```bash
-uv run workctx install-service --config workctx.yaml
+uv run workctx sync --full          # initial full sync
+uv run workctx sync                 # subsequent incremental syncs
 ```
 
-This installs a platform-appropriate background service:
+### 4. Install Background Daemon
+
+```bash
+uv run workctx install-service      # auto-syncs daily, Telegram commands
+```
 
 | Platform | Mechanism |
 |---|---|
-| macOS | launchd user agent (`KeepAlive`, `RunAtLoad`) |
+| macOS | launchd user agent (KeepAlive, RunAtLoad) |
 | Linux | systemd user service |
 | Windows | Task Scheduler at-logon trigger |
 
-### Manage the Service
+## Configuration
 
-```bash
-uv run workctx service-status     # Check if running
-uv run workctx remove-service     # Stop and remove
-uv run workctx daemon             # Run in foreground (for debugging)
-```
-
-### Telegram Commands
-
-If Telegram is configured, send commands to your bot from any device:
-
-| Command | Action |
-|---|---|
-| `/sync` | Trigger incremental sync now |
-| `/syncfull` | Trigger full resync |
-| `/status` | Show last sync times and object counts |
-| `/help` | List available commands |
-
-## Atlassian Authentication
-
-Supports both **Atlassian Cloud** and **Data Center** instances.
-
-### Cloud (*.atlassian.net)
-
-Uses API tokens with Basic Auth.
-
-1. Go to <https://id.atlassian.com/manage-profile/security/api-tokens>
-2. Click **Create API token** -> copy it
-3. Store it: `uv run workctx auth set my-cloud-token`
+All configuration lives in a single YAML file. See
+[`example-config.yaml`](example-config.yaml) for a fully commented
+template.
 
 ```yaml
+version: 1
+
+project:
+  id: "my-project"
+  name: "My Project"
+  output_root: "~/Documents/WorkContext/my-project"
+  # state_dir: "~/Documents/WorkContext/my-project/_state"  # optional override
+
 sources:
   confluence:
     - name: my-wiki
-      base_url: "https://myorg.atlassian.net"
-      deployment: cloud
+      base_url: "https://company.atlassian.net"
       spaces: [ENG, OPS]
       auth:
         mode: api_token
         username: "you@company.com"
-        secret_ref: my-cloud-token
-```
-
-### Data Center (self-hosted)
-
-Uses Personal Access Tokens (PATs) with Bearer auth. No username required.
-
-1. Go to **Profile -> Personal Access Tokens** in your DC instance
-2. Create a token with read permissions -> copy it
-3. Store it: `uv run workctx auth set my-dc-pat`
-
-```yaml
-sources:
-  confluence:
-    - name: my-dc-wiki
-      base_url: "https://confluence.myorg.com"
-      deployment: datacenter
-      spaces: [PROJ, TEAM]
-      auth:
-        mode: pat
-        secret_ref: my-dc-confluence-pat
+        secret_ref: my-confluence-token
 
   jira:
-    - name: my-dc-jira
-      base_url: "https://jira.myorg.com"
-      deployment: datacenter
+    - name: my-jira
+      base_url: "https://company.atlassian.net"
       projects: [PROJ, OPS]
       auth:
-        mode: pat
-        secret_ref: my-dc-jira-pat
-      include_comments: true
+        mode: api_token
+        username: "you@company.com"
+        secret_ref: my-jira-token
 ```
 
-### Auto-Detection
+## Atlassian Authentication
 
-When `deployment` is `"auto"` (default), the tool probes the instance
-and detects Cloud vs. Data Center automatically. For reliability, set
-`deployment: datacenter` or `deployment: cloud` explicitly.
+Supports both **Atlassian Cloud** (`.atlassian.net`) and **Data Center**
+(self-hosted) instances. Set `deployment: auto` (default) for
+auto-detection, or `cloud` / `datacenter` explicitly.
+
+### Cloud
+
+1. Go to <https://id.atlassian.com/manage-profile/security/api-tokens>
+2. Create an API token
+3. `uv run workctx auth set my-confluence-token`
+
+Config: `mode: api_token`, `username: you@company.com`
+
+### Data Center
+
+1. Go to **Profile > Personal Access Tokens** in your DC instance
+2. Create a token with read permissions
+3. `uv run workctx auth set my-dc-pat`
+
+Config: `mode: pat` (no username needed)
 
 ## SharePoint
 
-Two modes are supported. **Important:** If the SharePoint library is
-already synced to your machine via OneDrive, use Mode 1 (local sync).
-Only use Mode 2 (browser-based) if the library is **not** synced locally.
-Using both for the same library will create duplicate content.
+Two modes. **Use only one per library to avoid duplicates.**
 
-### Mode 1: OneDrive Local Sync (zero config)
+### Mode 1: OneDrive Local Sync (preferred)
 
-If the document library is synced to your machine via OneDrive:
+If the SharePoint library is already synced to your machine via OneDrive:
 
 ```yaml
-sources:
-  sharepoint:
-    - name: team-docs
-      mode: onedrive_local
-      local_path: "~/Library/CloudStorage/OneDrive-YourOrg/SharedDocs"   # macOS
-      # local_path: "C:/Users/you/OneDrive - YourOrg/SharedDocs"        # Windows
+sharepoint:
+  - name: team-docs
+    mode: onedrive_local
+    local_path: "~/Library/CloudStorage/OneDrive-Company/SharedDocs"  # macOS
+    # local_path: "C:/Users/you/OneDrive - Company/SharedDocs"       # Windows
 ```
 
-### Mode 2: Browser-Based (no local sync needed)
+No browser automation or app registration required.
 
-For SharePoint libraries **not synced locally**. Downloads files over
-HTTPS via SharePoint's REST API. Unconvertible files (video, images,
-binaries >200 MB) are automatically detected from metadata and skipped
-before download.
+### Mode 2: Browser-Based
 
-**No Microsoft app registration or admin consent required.**
+For libraries **not** synced locally. Downloads via SharePoint's REST API
+using browser session cookies. No Microsoft app registration or admin
+consent required.
 
 ```yaml
-sources:
-  sharepoint:
-    - name: team-sharepoint
-      site_url: "https://company.sharepoint.com/sites/TeamSite"
+sharepoint:
+  - name: team-sharepoint
+    site_url: "https://company.sharepoint.com/sites/TeamSite"
+    mode: browser
+    doc_library: "Shared Documents"
+    server_relative_path: "/sites/TeamSite/Shared Documents"
+    auth:
       mode: browser
-      doc_library: "Shared Documents"
-      server_relative_path: "/sites/TeamSite/Shared Documents/SubFolder"
-      auth:
-        mode: browser
-        secret_ref: sp-cookies
+      secret_ref: sp-cookies
 ```
 
-First login: `uv run workctx auth login-sharepoint --source team-sharepoint`
+First login (opens a browser window):
+
+```bash
+uv run workctx auth login-sharepoint --source team-sharepoint
+```
+
+Requires Playwright: `uv pip install playwright && playwright install chromium`
 
 ## Local Folders
 
-Point at any local directories (OneDrive folders, project files, shared
-drives, etc.) and they'll be scanned recursively.
+Scan any local directories recursively:
 
 ```yaml
-sources:
-  local_folders:
-    - name: my-projects
-      paths:
-        - "~/Documents/Projects"
-        - "~/Library/CloudStorage/OneDrive-Company/Shared"
-      include: ["**/*"]
-      exclude: ["**/node_modules/**", "**/.git/**", "**/dist/**"]
+local_folders:
+  - name: my-projects
+    paths:
+      - "~/Documents/Projects"
+      - "~/OneDrive/Shared"
+    exclude: ["**/node_modules/**", "**/.git/**"]
 ```
 
-The scanner automatically skips:
-- Its own state database and output directories
-- Common junk directories (`.git`, `node_modules`, `__pycache__`, etc.)
-- Unconvertible files (images, video, binaries) based on extension
-- Hidden files and temp files (`~$*`)
+Automatically skips its own state/output directories, common junk
+directories, hidden files, and unconvertible files.
 
 ## Supported File Types
 
-Work Context Mirror converts 60+ file formats to Markdown:
+**Converted to Markdown (60+ formats):**
 
 | Category | Extensions |
 |---|---|
 | Office | `.docx`, `.doc`, `.pptx`, `.ppt`, `.xlsx`, `.xls`, `.xlsm`, `.xlsb`, `.rtf` |
 | PDF | `.pdf` |
 | Email | `.msg`, `.eml` |
-| Web | `.html`, `.htm`, `.mhtml`, `.mht` |
-| Structured data | `.csv`, `.tsv`, `.json`, `.jsonl`, `.xml` |
-| Books / notebooks | `.epub`, `.ipynb` |
-| Archives | `.zip` (contents extracted and converted) |
-| Code (50+) | `.py`, `.js`, `.ts`, `.java`, `.go`, `.rs`, `.c`, `.cpp`, `.cs`, `.rb`, `.php`, `.swift`, `.sql`, `.sh`, `.ps1`, and many more |
-| Markup / docs | `.md`, `.rst`, `.adoc`, `.tex`, `.wiki` |
+| Web | `.html`, `.htm`, `.mhtml` |
+| Data | `.csv`, `.tsv`, `.json`, `.jsonl`, `.xml` |
+| Books | `.epub`, `.ipynb` |
+| Code | `.py`, `.js`, `.ts`, `.java`, `.go`, `.rs`, `.c`, `.cpp`, `.rb`, `.php`, `.swift`, `.sql`, `.sh`, `.ps1`, and 40+ more |
+| Markup | `.md`, `.rst`, `.adoc`, `.tex`, `.wiki` |
 | Config | `.yaml`, `.toml`, `.ini`, `.env`, `.tf`, `.hcl`, `.dockerfile` |
 
-Unknown text files are auto-detected via heuristic. Binary files that
-cannot be converted produce a metadata-only stub with a link to the original.
-
 **Automatically skipped** (never downloaded from SharePoint):
-video (`.mov`, `.mp4`), images (`.png`, `.jpg`, `.gif`), audio (`.mp3`,
-`.wav`), design files (`.fig`, `.psd`), binaries (`.exe`, `.dmg`), fonts
-(`.ttf`, `.woff`), OneNote (`.one`), and anything >200 MB.
+video, images, audio, design files, binaries, fonts, OneNote, and
+anything over 200 MB.
 
-## Telegram Notifications
+## Background Daemon
 
-1. Message [@BotFather](https://t.me/BotFather) on Telegram -> `/newbot`
+The daemon runs as a persistent background service:
+
+- Syncs automatically once every 24 hours
+- Accepts Telegram commands (`/sync`, `/syncfull`, `/status`, `/help`)
+- Restarts automatically on crash
+- Starts on login
+
+```bash
+uv run workctx install-service    # install
+uv run workctx service-status     # check
+uv run workctx remove-service     # remove
+uv run workctx daemon             # run in foreground (debugging)
+```
+
+## Telegram
+
+Optional. Receive failure alerts and trigger syncs from any device.
+
+1. Message [@BotFather](https://t.me/BotFather) > `/newbot`
 2. Copy the bot token
-3. Start a chat with your new bot and send any message
-4. Get your chat ID from `https://api.telegram.org/bot<TOKEN>/getUpdates`
+3. Send any message to your new bot
+4. Get your chat ID: `https://api.telegram.org/bot<TOKEN>/getUpdates`
 
 ```bash
 uv run workctx auth set telegram-bot-token
@@ -327,89 +256,98 @@ notifications:
 | Platform | Backend |
 |---|---|
 | macOS | Keychain |
-| Windows | Windows Credential Locker |
+| Windows | Credential Locker |
 | Linux | Secret Service (GNOME Keyring / KWallet) |
 
-Environment variable fallback: `my-jira-pat` -> `MY_JIRA_PAT`.
+Fallback: environment variables (`my-jira-pat` -> `MY_JIRA_PAT`).
 
 ## CLI Reference
 
-| Command | Description |
-|---|---|
-| `workctx init` | Interactive config generator |
-| `workctx doctor` | Validate config and environment |
-| `workctx sync` | Run incremental sync |
-| `workctx sync --full` | Force full resync |
-| `workctx status` | Show sync status |
-| `workctx search "query"` | Full-text search the corpus |
-| `workctx daemon` | Run daemon in foreground |
-| `workctx install-service` | Install background daemon |
-| `workctx remove-service` | Remove background daemon |
-| `workctx service-status` | Check daemon status |
-| `workctx auth set <ref>` | Store a secret |
-| `workctx auth remove <ref>` | Remove a secret |
-| `workctx auth login-sharepoint` | Browser login for SharePoint |
-| `workctx install-schedule` | Legacy: fixed-time launchd schedule |
+```
+workctx init                    Interactive config generator
+workctx doctor                  Validate config and environment
+workctx sync [--full]           Run sync (incremental or full)
+workctx status                  Show sync status per source
+workctx search "query"          Full-text search the corpus
+workctx daemon                  Run daemon in foreground
+workctx install-service         Install background daemon
+workctx remove-service          Remove background daemon
+workctx service-status          Check daemon status
+workctx auth set <ref>          Store a secret
+workctx auth remove <ref>       Remove a secret
+workctx auth login-sharepoint   Browser login for SharePoint
+workctx reconcile               Force deletion detection
+workctx reindex                 Rebuild FTS5 search index
+```
 
 ## Output Structure
 
 ```
-OutputRoot/
-+-- README.md             # Auto-generated corpus overview
-+-- CONTEXT.md            # Corpus explanation for humans & LLMs
-+-- AGENTS.md             # For Codex-style agents
-+-- CLAUDE.md             # For Claude Code
-+-- _meta/
-|   +-- INDEX.md          # Source overview with counts
-|   +-- health.json       # Sync health status
-|   +-- manifest.jsonl    # Per-document metadata
-+-- confluence/<source>/<SPACE>/<page>.md
-+-- jira/<source>/<PROJECT>/<PROJ-123>.md
-+-- sharepoint/<source>/<path>/<document>.md
-+-- local_folder/<source>/<folder>/<file>.md
+<output_root>/
+├── CONTEXT.md                    # Corpus explanation for humans & LLMs
+├── AGENTS.md                     # Codex-style agent guidance
+├── CLAUDE.md                     # Claude Code guidance
+├── README.md                     # Auto-generated overview
+├── _meta/
+│   ├── INDEX.md                  # Source overview with counts
+│   ├── health.json               # Sync health status
+│   └── manifest.jsonl            # Per-document metadata
+├── confluence/<source>/<space>/<page>.md
+├── jira/<source>/<project>/<ISSUE-KEY>.md
+├── sharepoint/<source>/<path>/<document>.md
+└── local_folder/<source>/<dir>/<file>.md
 ```
+
+Every Markdown file includes YAML front matter with full provenance:
+`source_type`, `source_url`, `updated_at`, `synced_at`, `source_version`,
+`content_sha256`.
 
 ## State & Logs
 
-| Platform | Path |
+State is stored per-project in a platform-specific location (overridable
+via `state_dir` in config):
+
+| Platform | Default path |
 |---|---|
-| macOS | `~/Library/Application Support/WorkContextMirror/<project-id>/` |
-| Windows | `%LOCALAPPDATA%\WorkContextMirror\<project-id>\` |
-| Linux | `~/.local/share/WorkContextMirror/<project-id>/` |
+| macOS | `~/Library/Application Support/WorkContextMirror/<id>/` |
+| Windows | `%LOCALAPPDATA%\WorkContextMirror\<id>\` |
+| Linux | `~/.local/share/WorkContextMirror/<id>/` |
+
+Contains: `state.sqlite` (source objects, checkpoints, FTS5 index),
+`logs/` (rotating log files), `run.lock` (execution lock).
 
 ## Troubleshooting
 
-| Symptom | Fix |
-|---|---|
-| Config not found | `--config /path/to/config.yaml` |
-| No API token | `workctx auth set <secret_ref>` |
-| Lock file stale | Delete `run.lock` in state dir |
-| Confluence 401 | Regenerate PAT |
-| SharePoint expired | `workctx auth login-sharepoint --source <name>` |
-| Daemon not running | `workctx service-status` then `workctx install-service` |
-
 ```bash
-uv run workctx doctor --config workctx.yaml --verbose
+uv run workctx doctor --verbose   # comprehensive environment check
 ```
 
-## Security Notes
+| Problem | Fix |
+|---|---|
+| Config not found | Use `--config /path/to/config.yaml` |
+| Auth 401 | Regenerate token, `workctx auth set <ref>` |
+| SharePoint expired | `workctx auth login-sharepoint --source <name>` |
+| Lock file stale | Delete `run.lock` in state dir |
+| Daemon not running | `workctx service-status`, then `workctx install-service` |
 
-- Secrets stored in **OS credential store only** -- never in config files or logs
-- All processing happens **locally** -- nothing sent to external services
+## Security
+
+- Secrets stored in **OS credential store** only — never in config files or logs
+- All processing happens **locally** — no content sent to external services
 - Source systems accessed **read-only**
-- SharePoint cookies encrypted in OS credential store
+- Log filter prevents secrets from appearing in log files
 
-**Important:** Synchronising organisational information into a locally
-controlled directory may be restricted by your employer. Ensure
-compliance with information-governance requirements.
+> **Note:** Synchronising organisational information may be subject to
+> your employer's information-governance policies. Ensure compliance
+> before use.
 
 ## Development
 
 ```bash
 uv sync --extra dev
-uv run pytest                    # 105+ tests
-uv run ruff check src/ tests/   # Lint
-uv run mypy src/                 # Type-check
+uv run pytest                    # 138 tests
+uv run ruff check src/ tests/   # lint
+uv run ruff format src/ tests/  # format
 ```
 
 ## License
