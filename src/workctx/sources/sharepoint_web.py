@@ -2,7 +2,8 @@
 
 Uses rtFa/FedAuth session cookies (captured via Playwright) to call
 SharePoint's internal REST endpoints. Delta detection via GetChanges
-with persisted ChangeTokens.
+with persisted ChangeTokens. Folder enumeration and file processing
+use thread pools for concurrency.
 """
 
 from __future__ import annotations
@@ -10,8 +11,10 @@ from __future__ import annotations
 import fnmatch
 import logging
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 from typing import Any
 from urllib.parse import quote
 
@@ -36,6 +39,7 @@ from workctx.state import StateDB
 logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = 120.0
+MAX_ENUMERATE_WORKERS = 8
 
 _CHROMIUM_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -154,52 +158,127 @@ class SharePointWebSource(Source):
     def get_current_ids(self) -> set[str]:
         client = self._get_client()
         ids: set[str] = set()
+        ids_lock = Lock()
         base_path = self._server_relative_path or self._default_server_relative_path()
-        self._collect_ids_recursive(client, base_path, ids)
+
+        def _collect_folder(folder_path: str) -> list[str]:
+            child_folders: list[str] = []
+            files_resp = self._sp_get_by_path(
+                client, "GetFolderByServerRelativeUrl",
+                folder_path, suffix="/Files",
+                params={"$select": "ServerRelativeUrl"},
+            )
+            if files_resp and files_resp.status_code == 200:
+                batch = [
+                    f.get("ServerRelativeUrl", "")
+                    for f in files_resp.json().get("d", {}).get("results", [])
+                    if f.get("ServerRelativeUrl")
+                ]
+                if batch:
+                    with ids_lock:
+                        ids.update(batch)
+
+            folders_resp = self._sp_get_by_path(
+                client, "GetFolderByServerRelativeUrl",
+                folder_path, suffix="/Folders",
+                params={"$select": "Name,ServerRelativeUrl"},
+            )
+            if folders_resp and folders_resp.status_code == 200:
+                for sub in folders_resp.json().get("d", {}).get("results", []):
+                    name = sub.get("Name", "")
+                    if name.startswith("_") or name == "Forms":
+                        continue
+                    sub_url = sub.get("ServerRelativeUrl", "")
+                    if sub_url:
+                        child_folders.append(sub_url)
+            return child_folders
+
+        pending = [base_path]
+        with ThreadPoolExecutor(max_workers=MAX_ENUMERATE_WORKERS) as pool:
+            while pending:
+                futures = {pool.submit(_collect_folder, p): p for p in pending}
+                pending = []
+                for future in as_completed(futures):
+                    try:
+                        pending.extend(future.result())
+                    except Exception:
+                        logger.warning("Reconciliation enumerate failed", exc_info=True)
+
         return ids
-
-    def _collect_ids_recursive(
-        self, client: httpx.Client, server_relative_path: str, ids: set[str]
-    ) -> None:
-        files_resp = self._sp_get_by_path(
-            client,
-            "GetFolderByServerRelativeUrl",
-            server_relative_path,
-            suffix="/Files",
-            params={"$select": "ServerRelativeUrl"},
-        )
-        if files_resp and files_resp.status_code == 200:
-            for f in files_resp.json().get("d", {}).get("results", []):
-                url = f.get("ServerRelativeUrl", "")
-                if url:
-                    ids.add(url)
-
-        folders_resp = self._sp_get_by_path(
-            client,
-            "GetFolderByServerRelativeUrl",
-            server_relative_path,
-            suffix="/Folders",
-            params={"$select": "Name,ServerRelativeUrl"},
-        )
-        if folders_resp and folders_resp.status_code == 200:
-            for sub in folders_resp.json().get("d", {}).get("results", []):
-                name = sub.get("Name", "")
-                if name.startswith("_") or name == "Forms":
-                    continue
-                sub_url = sub.get("ServerRelativeUrl", "")
-                if sub_url:
-                    self._collect_ids_recursive(client, sub_url, ids)
 
     # ------------------------------------------------------------------
     # Full enumeration
     # ------------------------------------------------------------------
 
     def _full_enumerate(self, client: httpx.Client, db: StateDB) -> list[DiscoveredChange]:
-        """Walk the full document library and return all files as changes."""
-        changes: list[DiscoveredChange] = []
+        """Walk the full document library concurrently and return all files."""
         base_path = self._server_relative_path or self._default_server_relative_path()
 
-        self._recurse_folder(client, base_path, changes, db)
+        # Pre-load all known objects for this source into memory to avoid
+        # per-file DB lookups during enumeration.
+        known = {
+            obj.source_id: obj
+            for obj in db.get_objects_for_source(self.name)
+        }
+
+        changes: list[DiscoveredChange] = []
+        changes_lock = Lock()
+
+        def _enum_folder(folder_path: str) -> list[str]:
+            """Enumerate one folder, return list of child folder paths."""
+            logger.info("Enumerating folder: %s", folder_path)
+            child_folders: list[str] = []
+
+            files_resp = self._sp_get_by_path(
+                client,
+                "GetFolderByServerRelativeUrl",
+                folder_path,
+                suffix="/Files",
+                params={"$select": "Name,ServerRelativeUrl,TimeLastModified,Length,UniqueId"},
+            )
+            if files_resp and files_resp.status_code == 200:
+                results = files_resp.json().get("d", {}).get("results", [])
+                batch: list[DiscoveredChange] = []
+                for f in results:
+                    change = self._file_to_change_fast(f, known)
+                    if change:
+                        batch.append(change)
+                if batch:
+                    with changes_lock:
+                        changes.extend(batch)
+
+            folders_resp = self._sp_get_by_path(
+                client,
+                "GetFolderByServerRelativeUrl",
+                folder_path,
+                suffix="/Folders",
+                params={"$select": "Name,ServerRelativeUrl"},
+            )
+            if folders_resp and folders_resp.status_code == 200:
+                for sub in folders_resp.json().get("d", {}).get("results", []):
+                    name = sub.get("Name", "")
+                    if name.startswith("_") or name == "Forms":
+                        continue
+                    sub_url = sub.get("ServerRelativeUrl", "")
+                    if sub_url:
+                        child_folders.append(sub_url)
+
+            return child_folders
+
+        # BFS with thread pool: enumerate folders concurrently
+        pending = [base_path]
+        with ThreadPoolExecutor(max_workers=MAX_ENUMERATE_WORKERS) as pool:
+            while pending:
+                futures = {pool.submit(_enum_folder, p): p for p in pending}
+                pending = []
+                for future in as_completed(futures):
+                    try:
+                        child_folders = future.result()
+                        pending.extend(child_folders)
+                    except Exception:
+                        logger.warning(
+                            "Failed to enumerate %s", futures[future], exc_info=True,
+                        )
 
         current_token = self._get_current_change_token(client)
         if current_token:
@@ -212,47 +291,45 @@ class SharePointWebSource(Source):
         )
         return changes
 
-    def _recurse_folder(
-        self,
-        client: httpx.Client,
-        server_relative_path: str,
-        changes: list[DiscoveredChange],
-        db: StateDB,
-    ) -> None:
-        """Recursively list files and subfolders."""
-        logger.info("Enumerating folder: %s", server_relative_path)
-        files_resp = self._sp_get_by_path(
-            client,
-            "GetFolderByServerRelativeUrl",
-            server_relative_path,
-            suffix="/Files",
-            params={"$select": "Name,ServerRelativeUrl,TimeLastModified,Length,UniqueId"},
-        )
-        if files_resp and files_resp.status_code == 200:
-            data = files_resp.json()
-            results = data.get("d", {}).get("results", [])
-            for f in results:
-                change = self._file_to_change(f, db)
-                if change:
-                    changes.append(change)
+    def _file_to_change_fast(
+        self, file_data: dict[str, Any], known: dict[str, Any],
+    ) -> DiscoveredChange | None:
+        """Fast version of _file_to_change using pre-loaded known objects dict."""
+        from workctx.normalise.convertibility import should_skip_download
 
-        folders_resp = self._sp_get_by_path(
-            client,
-            "GetFolderByServerRelativeUrl",
-            server_relative_path,
-            suffix="/Folders",
-            params={"$select": "Name,ServerRelativeUrl"},
+        server_url = file_data.get("ServerRelativeUrl", "")
+        name = file_data.get("Name", "")
+        modified = file_data.get("TimeLastModified", "")
+        size = file_data.get("Length")
+        unique_id = file_data.get("UniqueId", server_url)
+
+        if self._should_exclude(name, server_url):
+            return None
+
+        file_size = int(size) if size else None
+        skip, reason = should_skip_download(name, file_size)
+        if skip:
+            logger.debug("Skipping %s: %s", name, reason)
+            return None
+
+        existing = known.get(server_url)
+        if existing and existing.source_version == modified and not existing.last_error:
+            return None
+
+        action = ChangeAction.ADD if not existing else ChangeAction.UPDATE
+        source_url = f"{self._site_url}{server_url}"
+
+        return DiscoveredChange(
+            source_id=server_url,
+            source_key=unique_id,
+            title=Path(name).stem,
+            source_url=source_url,
+            source_version=modified,
+            source_updated_at=_parse_sp_datetime(modified),
+            action=action,
+            file_size=file_size,
+            metadata={"library": self._doc_library},
         )
-        if folders_resp and folders_resp.status_code == 200:
-            data = folders_resp.json()
-            results = data.get("d", {}).get("results", [])
-            for folder in results:
-                folder_name = folder.get("Name", "")
-                if folder_name.startswith("_") or folder_name == "Forms":
-                    continue
-                sub_path = folder.get("ServerRelativeUrl", "")
-                if sub_path:
-                    self._recurse_folder(client, sub_path, changes, db)
 
     def _file_to_change(self, file_data: dict[str, Any], db: StateDB) -> DiscoveredChange | None:
         """Convert a SharePoint file API response to a DiscoveredChange."""
