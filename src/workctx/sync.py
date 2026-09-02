@@ -45,7 +45,7 @@ from workctx.state import StateDB
 
 logger = logging.getLogger(__name__)
 
-MAX_SYNC_WORKERS = 6
+MAX_SYNC_WORKERS = 10
 
 
 def run_sync(

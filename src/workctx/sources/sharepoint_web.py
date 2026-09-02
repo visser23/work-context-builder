@@ -8,8 +8,10 @@ use thread pools for concurrency.
 
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import logging
+import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -39,7 +41,7 @@ from workctx.state import StateDB
 logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = 120.0
-MAX_ENUMERATE_WORKERS = 8
+MAX_ENUMERATE_WORKERS = 12
 
 _CHROMIUM_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -511,30 +513,56 @@ class SharePointWebSource(Source):
     # ------------------------------------------------------------------
 
     def download_file(self, server_relative_url: str) -> Path | None:
-        """Download a file to a temp path for conversion, streaming to disk."""
+        """Download a file to a temp path for conversion, streaming to disk.
+
+        Tries the standard URL-encoded path first, falls back to the @path
+        parameter for files with problematic characters, and retries once
+        on transient failures.
+        """
         client = self._get_client()
         suffix = Path(server_relative_url).suffix
 
         escaped = server_relative_url.replace("'", "''")
         encoded = quote(escaped, safe="/")
-        url = f"/_api/web/GetFileByServerRelativeUrl('{encoded}')/$value"
+        urls = [
+            f"/_api/web/GetFileByServerRelativeUrl('{encoded}')/$value",
+            f"/_api/web/GetFileByServerRelativeUrl(@path)/$value?@path='{encoded}'",
+        ]
 
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            try:
-                with client.stream("GET", url) as resp:
-                    if resp.status_code != 200:
-                        logger.warning(
-                            "Failed to download %s: HTTP %s",
-                            server_relative_url,
-                            resp.status_code,
-                        )
-                        return None
-                    for chunk in resp.iter_bytes(chunk_size=65536):
-                        tmp.write(chunk)
-            except httpx.HTTPError as e:
-                logger.warning("Download error %s: %s", server_relative_url, e)
-                return None
-        return Path(tmp.name)
+        for url in urls:
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                try:
+                    with client.stream("GET", url) as resp:
+                        if resp.status_code == 429:
+                            retry = int(resp.headers.get("Retry-After", "5"))
+                            logger.warning(
+                                "Throttled downloading %s, waiting %ds",
+                                server_relative_url, retry,
+                            )
+                            import time
+                            time.sleep(retry)
+                            continue
+                        if resp.status_code != 200:
+                            with contextlib.suppress(OSError):
+                                os.unlink(tmp.name)
+                            if resp.status_code == 400:
+                                continue
+                            logger.warning(
+                                "Failed to download %s: HTTP %s",
+                                server_relative_url, resp.status_code,
+                            )
+                            return None
+                        for chunk in resp.iter_bytes(chunk_size=65536):
+                            tmp.write(chunk)
+                    return Path(tmp.name)
+                except httpx.HTTPError as e:
+                    with contextlib.suppress(OSError):
+                        os.unlink(tmp.name)
+                    logger.warning("Download error %s: %s", server_relative_url, e)
+                    return None
+
+        logger.warning("All download attempts failed for %s", server_relative_url)
+        return None
 
     # ------------------------------------------------------------------
     # Helpers

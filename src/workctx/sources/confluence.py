@@ -130,11 +130,14 @@ class ConfluenceAdapter(Source):
         client = self._get_client()
         changes: list[DiscoveredChange] = []
 
+        # Pre-load known objects to avoid per-page DB queries
+        known = {obj.source_id: obj for obj in db.get_objects_for_source(self.name)}
+
         for space_key in self.config.spaces:
             if full or not checkpoint or not checkpoint.last_checkpoint:
-                space_changes = self._enumerate_all_pages(client, space_key, db)
+                space_changes = self._enumerate_all_pages(client, space_key, known)
             else:
-                space_changes = self._enumerate_updated_pages(client, space_key, checkpoint, db)
+                space_changes = self._enumerate_updated_pages(client, space_key, checkpoint, known)
             changes.extend(space_changes)
 
         logger.info("Confluence/%s: %d changes discovered", self.name, len(changes))
@@ -149,7 +152,7 @@ class ConfluenceAdapter(Source):
         return ids
 
     def _enumerate_all_pages(
-        self, client: httpx.Client, space_key: str, db: StateDB
+        self, client: httpx.Client, space_key: str, known: dict[str, Any],
     ) -> list[DiscoveredChange]:
         """Enumerate all pages in a space (initial sync)."""
         changes: list[DiscoveredChange] = []
@@ -174,7 +177,7 @@ class ConfluenceAdapter(Source):
                 break
 
             for page in results:
-                change = self._page_to_change(page, space_key, db)
+                change = self._page_to_change(page, space_key, known)
                 if change:
                     changes.append(change)
 
@@ -189,7 +192,7 @@ class ConfluenceAdapter(Source):
         client: httpx.Client,
         space_key: str,
         checkpoint: SyncCheckpoint,
-        db: StateDB,
+        known: dict[str, Any],
     ) -> list[DiscoveredChange]:
         """Query for pages updated since the checkpoint."""
         since = self._checkpoint_with_overlap(checkpoint.last_checkpoint or "")
@@ -215,7 +218,7 @@ class ConfluenceAdapter(Source):
                 break
 
             for page in results:
-                change = self._page_to_change(page, space_key, db)
+                change = self._page_to_change(page, space_key, known)
                 if change:
                     changes.append(change)
 
@@ -226,7 +229,7 @@ class ConfluenceAdapter(Source):
         return changes
 
     def _page_to_change(
-        self, page: dict[str, Any], space_key: str, db: StateDB
+        self, page: dict[str, Any], space_key: str, known: dict[str, Any],
     ) -> DiscoveredChange | None:
         """Convert a Confluence page API response to a DiscoveredChange."""
         from workctx.normalise.atlassian import confluence_storage_to_markdown
@@ -237,7 +240,7 @@ class ConfluenceAdapter(Source):
         version_num = str(version_info.get("number", ""))
         updated = version_info.get("when", "")
 
-        existing = db.get_object(self.name, page_id)
+        existing = known.get(page_id)
         if existing and existing.source_version == version_num:
             return None
 
