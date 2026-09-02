@@ -51,8 +51,10 @@ class TestCookieExtraction:
 
 class TestCookiePersistence:
     def test_persist_and_load(self):
-        with patch("workctx.auth.sharepoint.set_secret") as mock_set, \
-             patch("workctx.auth.sharepoint.get_secret") as mock_get:
+        with (
+            patch("workctx.auth.sharepoint.set_secret") as mock_set,
+            patch("workctx.auth.sharepoint.get_secret") as mock_get,
+        ):
             cookies = {"rtFa": "abc", "FedAuth": "def"}
             _persist_cookies("test-ref", cookies, "https://sp.com")
 

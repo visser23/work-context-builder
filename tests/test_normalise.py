@@ -55,16 +55,12 @@ class TestFrontMatter:
 
 class TestSplitLargeDocument:
     def test_small_document_no_split(self):
-        fm = FrontMatter(
-            source_type="test", source_name="t", source_id="1", title="Small"
-        )
+        fm = FrontMatter(source_type="test", source_name="t", source_id="1", title="Small")
         parts = split_large_document(fm, "Short text", max_chars=1000)
         assert len(parts) == 1
 
     def test_large_document_splits(self):
-        fm = FrontMatter(
-            source_type="test", source_name="t", source_id="1", title="Large"
-        )
+        fm = FrontMatter(source_type="test", source_name="t", source_id="1", title="Large")
         body = "# Section 1\n\nLorem ipsum " * 100 + "\n\n# Section 2\n\nDolor sit " * 100
         parts = split_large_document(fm, body, max_chars=500, base_path="test.md")
         assert len(parts) > 1
@@ -328,10 +324,7 @@ class TestConfluenceStorage:
         assert "Important note" in result
 
     def test_table(self):
-        xml = (
-            "<table><tr><th>Name</th><th>Value</th></tr>"
-            "<tr><td>A</td><td>1</td></tr></table>"
-        )
+        xml = "<table><tr><th>Name</th><th>Value</th></tr><tr><td>A</td><td>1</td></tr></table>"
         result = confluence_storage_to_markdown(xml)
         assert "Name" in result
         assert "Value" in result

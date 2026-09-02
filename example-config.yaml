@@ -78,7 +78,7 @@ sources:
     # - name: "team-sharepoint"
     #   site_url: "https://tenant.sharepoint.com/sites/TeamSite"
     #   mode: "browser"
-    #   doc_library: "Shared Documents"
+    #   doc_library: "Documents"  # Check the *list title* in Site Contents (often "Documents" or "Shared Documents")
     #   server_relative_path: "/sites/TeamSite/Shared Documents"
     #   include: ["**/*"]
     #   exclude: ["**/~$*", "**/.DS_Store", "**/*.tmp"]

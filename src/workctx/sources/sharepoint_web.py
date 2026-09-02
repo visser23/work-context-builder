@@ -145,10 +145,11 @@ class SharePointWebSource(Source):
     ) -> list[DiscoveredChange]:
         client = self._get_client()
 
-        if full or not checkpoint or not checkpoint.last_checkpoint:
+        change_token = (checkpoint.metadata or {}).get("change_token") if checkpoint else None
+        if full or not change_token:
             return self._full_enumerate(client, db)
 
-        return self._incremental_via_getchanges(client, db, checkpoint.last_checkpoint)
+        return self._incremental_via_getchanges(client, db, change_token)
 
     def get_current_ids(self) -> set[str]:
         client = self._get_client()
@@ -355,7 +356,6 @@ class SharePointWebSource(Source):
                     "File": True,
                     "Move": True,
                     "Rename": True,
-                    "FetchLimit": 500,
                     "ChangeTokenStart": {"StringValue": change_token},
                 }
             },

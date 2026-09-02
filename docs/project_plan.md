@@ -85,6 +85,14 @@
 - [x] Skip-before-download for unconvertible files
 - [x] First-run bootstrap scripts (setup.sh, setup.ps1)
 
+## Phase 9: Reliability & Polish
+- [x] SharePoint ChangeToken persisted in checkpoint metadata (not last_checkpoint)
+- [x] Version-only changes update DB version without file rewrite
+- [x] Cookie cache-first strategy (HTTP test before Playwright launch)
+- [x] Daemon cookie keepalive every 4h with Telegram expiry notifications
+- [x] Fixed GetChanges Edm.Int64 error (removed FetchLimit parameter)
+- [x] doc_library config correctly distinguishes list title from folder path
+
 ## Documentation
 - [x] README.md (installation → first sync)
 - [x] Example configuration file
@@ -92,3 +100,4 @@
 - [x] SharePoint/OneDrive setup instructions (in README)
 - [x] Telegram setup instructions (in README)
 - [x] Troubleshooting guide (in README)
+- [x] AI-assistant configuration prompt template

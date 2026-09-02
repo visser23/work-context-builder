@@ -1,6 +1,5 @@
 """Tests for secret management."""
 
-
 from workctx.secrets import _ref_to_env_key, get_secret
 
 

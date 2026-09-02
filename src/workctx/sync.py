@@ -245,18 +245,23 @@ def _sync_source(
             _reconcile_source(source, db, idx, output_root)
 
         now = datetime.now(UTC)
+
+        cp_value = latest_timestamp or (checkpoint.last_checkpoint if checkpoint else None)
+        cp_metadata = dict(checkpoint.metadata) if checkpoint and checkpoint.metadata else {}
+        if hasattr(source, "_latest_change_token") and source._latest_change_token:
+            cp_metadata["change_token"] = source._latest_change_token
+
         new_cp = SyncCheckpoint(
             source_name=source.name,
             source_type=source.source_type,
-            last_checkpoint=latest_timestamp
-            or (checkpoint.last_checkpoint if checkpoint else None),
+            last_checkpoint=cp_value,
             last_success=now
             if sr.objects_failed == 0
             else (checkpoint.last_success if checkpoint else None),
             last_reconciliation=now
             if should_reconcile
             else (checkpoint.last_reconciliation if checkpoint else None),
-            metadata=checkpoint.metadata if checkpoint else {},
+            metadata=cp_metadata,
         )
         db.save_checkpoint(new_cp)
 
@@ -342,6 +347,8 @@ def _handle_upsert(
 
     existing = db.get_object(source.name, change.source_id)
     if existing and existing.content_sha256 == c_hash:
+        if existing.source_version != change.source_version:
+            db.update_version(source.name, change.source_id, change.source_version)
         return
 
     parts = split_large_document(fm, body_md, config.sync.large_document_chars, output_path)

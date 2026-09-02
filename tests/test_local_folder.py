@@ -43,9 +43,7 @@ def test_source_type(config: LocalFolderSource) -> None:
     assert adapter.name == "test-local"
 
 
-def test_discover_changes_initial(
-    config: LocalFolderSource, tmp_folder: Path
-) -> None:
+def test_discover_changes_initial(config: LocalFolderSource, tmp_folder: Path) -> None:
     adapter = LocalFolderAdapter(config)
     db = MagicMock()
     db.get_objects_for_source.return_value = []
@@ -61,9 +59,7 @@ def test_discover_changes_initial(
     assert all("~$" not in c.source_id for c in changes)
 
 
-def test_skips_unconvertible(
-    config: LocalFolderSource, tmp_folder: Path
-) -> None:
+def test_skips_unconvertible(config: LocalFolderSource, tmp_folder: Path) -> None:
     adapter = LocalFolderAdapter(config)
     db = MagicMock()
     db.get_objects_for_source.return_value = []
@@ -130,9 +126,7 @@ def test_skips_git_dirs(tmp_path: Path) -> None:
     assert all(".git" not in c.source_id for c in changes)
 
 
-def test_get_current_ids(
-    config: LocalFolderSource, tmp_folder: Path
-) -> None:
+def test_get_current_ids(config: LocalFolderSource, tmp_folder: Path) -> None:
     adapter = LocalFolderAdapter(config)
     ids = adapter.get_current_ids()
     assert any("readme.md" in s for s in ids)
@@ -140,9 +134,7 @@ def test_get_current_ids(
 
 
 def test_validate_missing_path() -> None:
-    config = LocalFolderSource(
-        name="bad", paths=["/nonexistent/path/abc123"]
-    )
+    config = LocalFolderSource(name="bad", paths=["/nonexistent/path/abc123"])
     adapter = LocalFolderAdapter(config)
     issues = adapter.validate()
     assert len(issues) > 0
@@ -157,9 +149,7 @@ def test_multiple_paths(tmp_path: Path) -> None:
     (d1 / "a.md").write_text("A")
     (d2 / "b.md").write_text("B")
 
-    config = LocalFolderSource(
-        name="multi", paths=[str(d1), str(d2)]
-    )
+    config = LocalFolderSource(name="multi", paths=[str(d1), str(d2)])
     adapter = LocalFolderAdapter(config)
     db = MagicMock()
     db.get_objects_for_source.return_value = []

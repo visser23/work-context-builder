@@ -42,9 +42,7 @@ def test_double_acquire_fails(lock_path):
 
 
 def test_stale_lock_detected(lock_path):
-    lock_path.write_text(
-        json.dumps({"pid": 99999999, "started_at": "2020-01-01T00:00:00+00:00"})
-    )
+    lock_path.write_text(json.dumps({"pid": 99999999, "started_at": "2020-01-01T00:00:00+00:00"}))
 
     lock = ExecutionLock(lock_path)
     lock.acquire()
@@ -55,9 +53,7 @@ def test_stale_lock_detected(lock_path):
 
 
 def test_stale_lock_dead_pid(lock_path):
-    lock_path.write_text(
-        json.dumps({"pid": 99999999, "started_at": "2026-09-01T00:00:00+00:00"})
-    )
+    lock_path.write_text(json.dumps({"pid": 99999999, "started_at": "2026-09-01T00:00:00+00:00"}))
 
     lock = ExecutionLock(lock_path)
     lock.acquire()

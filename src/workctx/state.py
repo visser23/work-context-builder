@@ -225,6 +225,14 @@ class StateDB:
             return None
         return _row_to_object(row)
 
+    def update_version(self, source_name: str, source_id: str, source_version: str | None) -> None:
+        """Update only the source_version for an object (no file rewrite needed)."""
+        self.conn.execute(
+            "UPDATE source_objects SET source_version = ? WHERE source_name = ? AND source_id = ?",
+            (source_version, source_name, source_id),
+        )
+        self.conn.commit()
+
     def count_objects(self, source_name: str | None = None) -> int:
         if source_name:
             row = self.conn.execute(

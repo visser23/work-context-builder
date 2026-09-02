@@ -1,6 +1,5 @@
 """Integration tests for sync orchestration."""
 
-
 import pytest
 import yaml
 
