@@ -42,10 +42,7 @@ def main() -> None:
     source = SharePointWebSource(sp_config)
 
     site_url = (sp_config.site_url or "").rstrip("/")
-    server_path = (
-        sp_config.server_relative_path
-        or source._default_server_relative_path()
-    )
+    server_path = sp_config.server_relative_path or source._default_server_relative_path()
 
     db = StateDB(cfg.state_dir / "state.sqlite")
     output_root = cfg.output_root_path
@@ -65,13 +62,14 @@ def main() -> None:
     print(f"\nListing files in: {server_path}", flush=True)
     t0 = time.monotonic()
 
-
     all_files: list[dict] = []
 
     def list_folder(folder_path: str, depth: int = 0) -> None:
         indent = "  " * depth
         resp = source._sp_get_by_path(
-            client, "GetFolderByServerRelativeUrl", folder_path,
+            client,
+            "GetFolderByServerRelativeUrl",
+            folder_path,
             suffix="/Files",
             params={"$select": "Name,ServerRelativeUrl,TimeLastModified,Length,UniqueId"},
         )
@@ -84,7 +82,9 @@ def main() -> None:
             return
 
         resp2 = source._sp_get_by_path(
-            client, "GetFolderByServerRelativeUrl", folder_path,
+            client,
+            "GetFolderByServerRelativeUrl",
+            folder_path,
             suffix="/Folders",
             params={"$select": "Name,ServerRelativeUrl"},
         )
@@ -105,7 +105,9 @@ def main() -> None:
     if not all_files:
         print("No files found. Trying subfolders one level...")
         resp = source._sp_get_by_path(
-            client, "GetFolderByServerRelativeUrl", server_path,
+            client,
+            "GetFolderByServerRelativeUrl",
+            server_path,
             suffix="/Folders",
             params={"$select": "Name,ServerRelativeUrl"},
         )
@@ -124,7 +126,7 @@ def main() -> None:
         sys.exit(1)
 
     # Step 3: Process files
-    to_process = all_files[:args.limit]
+    to_process = all_files[: args.limit]
     print(f"\nProcessing {len(to_process)} files:", flush=True)
 
     succeeded = 0
@@ -214,7 +216,7 @@ def main() -> None:
 
     db.close()
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Results: {succeeded} converted, {stubs} stubs")
     print(f"Total files found on SharePoint: {len(all_files)}")
 

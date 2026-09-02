@@ -1,6 +1,5 @@
 """Tests for corpus output management."""
 
-
 import pytest
 
 from workctx.corpus import build_output_path, remove_corpus_file, write_corpus_file

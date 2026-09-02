@@ -16,9 +16,7 @@ def db(tmp_path):
 
 
 def test_schema_creation(db):
-    tables = db.conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-    ).fetchall()
+    tables = db.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     table_names = {t["name"] for t in tables}
     assert "schema_version" in table_names
     assert "sync_checkpoints" in table_names

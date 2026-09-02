@@ -1,6 +1,5 @@
 """Tests for SharePoint local source adapter."""
 
-
 import pytest
 
 from workctx.config import SharePointSource
@@ -47,9 +46,7 @@ def test_validate_ok(sp_source):
 
 
 def test_validate_missing_path():
-    config = SharePointSource(
-        name="bad", mode="onedrive_local", local_path="/nonexistent/path"
-    )
+    config = SharePointSource(name="bad", mode="onedrive_local", local_path="/nonexistent/path")
     source = SharePointLocalSource(config)
     issues = source.validate()
     assert any("does not exist" in i for i in issues)

@@ -286,7 +286,7 @@ sources:
     - name: team-sharepoint
       site_url: "https://yourcompany.sharepoint.com/sites/YourSite"
       mode: browser
-      doc_library: "Shared Documents"
+      doc_library: "Documents"              # see note below
       server_relative_path: "/sites/YourSite/Shared Documents"
       auth:
         mode: browser
@@ -309,7 +309,9 @@ if the cookies expire (the tool will tell you when).
 >   `https://yourcompany.sharepoint.com/sites/YourSite`
 > - `server_relative_path` is the folder path on the server:
 >   `/sites/YourSite/Shared Documents` (or `/sites/YourSite/Shared Documents/SubFolder`)
-> - `doc_library` is usually `"Shared Documents"` (the default SharePoint library name)
+> - `doc_library` is the **list title** in SharePoint (often `"Documents"` or `"Shared Documents"` —
+>   the easiest way to check is to go to Site Contents in the browser and look at the library name).
+>   The folder path in the URL (`Shared Documents`) and the list title can be different!
 
 ### Local Folders
 
