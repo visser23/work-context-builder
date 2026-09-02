@@ -139,6 +139,9 @@ class JiraAdapter(Source):
         changes: list[DiscoveredChange] = []
         start_at = 0
 
+        # Pre-load known objects to avoid per-issue DB queries
+        known = {obj.source_id: obj for obj in db.get_objects_for_source(self.name)}
+
         while True:
             data = self._search(client, jql, start_at)
             issues = data.get("issues", [])
@@ -148,7 +151,7 @@ class JiraAdapter(Source):
             for issue in issues:
                 change = self._issue_to_change(client, issue)
                 if change:
-                    existing = db.get_object(self.name, change.source_id)
+                    existing = known.get(change.source_id)
                     if existing and existing.source_version == change.source_version:
                         continue
                     change.action = ChangeAction.ADD if not existing else ChangeAction.UPDATE
