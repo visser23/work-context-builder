@@ -7,6 +7,7 @@ with persisted ChangeTokens.
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 import tempfile
 from datetime import datetime
@@ -29,6 +30,7 @@ from workctx.models import (
     SyncCheckpoint,
 )
 from workctx.sources.base import Source
+from workctx.sources.sharepoint import _strip_glob_prefix
 from workctx.state import StateDB
 
 logger = logging.getLogger(__name__)
@@ -80,12 +82,11 @@ class SharePointWebSource(Source):
                 self.name,
                 secret_ref,
             )
-        except SessionExpiredError:
-            raise
         except Exception as e:
             logger.warning(
                 "Keep-alive failed for %s, trying cached cookies: %s",
-                self.name, e,
+                self.name,
+                e,
             )
             cookies = load_cookies(secret_ref)
             if not cookies:
@@ -118,7 +119,6 @@ class SharePointWebSource(Source):
 
     def _validate_session(self) -> None:
         """Quick check that cookies are valid."""
-        assert self._client is not None
         resp = self._client.get("/_api/web/title")
         if resp.status_code in (401, 403) or resp.is_redirect:
             raise SessionExpiredError(
@@ -139,9 +139,7 @@ class SharePointWebSource(Source):
         if full or not checkpoint or not checkpoint.last_checkpoint:
             return self._full_enumerate(client, db)
 
-        return self._incremental_via_getchanges(
-            client, db, checkpoint.last_checkpoint
-        )
+        return self._incremental_via_getchanges(client, db, checkpoint.last_checkpoint)
 
     def get_current_ids(self) -> set[str]:
         client = self._get_client()
@@ -154,7 +152,9 @@ class SharePointWebSource(Source):
         self, client: httpx.Client, server_relative_path: str, ids: set[str]
     ) -> None:
         files_resp = self._sp_get_by_path(
-            client, "GetFolderByServerRelativeUrl", server_relative_path,
+            client,
+            "GetFolderByServerRelativeUrl",
+            server_relative_path,
             suffix="/Files",
             params={"$select": "ServerRelativeUrl"},
         )
@@ -165,7 +165,9 @@ class SharePointWebSource(Source):
                     ids.add(url)
 
         folders_resp = self._sp_get_by_path(
-            client, "GetFolderByServerRelativeUrl", server_relative_path,
+            client,
+            "GetFolderByServerRelativeUrl",
+            server_relative_path,
             suffix="/Folders",
             params={"$select": "Name,ServerRelativeUrl"},
         )
@@ -182,9 +184,7 @@ class SharePointWebSource(Source):
     # Full enumeration
     # ------------------------------------------------------------------
 
-    def _full_enumerate(
-        self, client: httpx.Client, db: StateDB
-    ) -> list[DiscoveredChange]:
+    def _full_enumerate(self, client: httpx.Client, db: StateDB) -> list[DiscoveredChange]:
         """Walk the full document library and return all files as changes."""
         changes: list[DiscoveredChange] = []
         base_path = self._server_relative_path or self._default_server_relative_path()
@@ -197,7 +197,8 @@ class SharePointWebSource(Source):
 
         logger.info(
             "SharePoint/%s: full enumeration found %d files",
-            self.name, len(changes),
+            self.name,
+            len(changes),
         )
         return changes
 
@@ -211,7 +212,9 @@ class SharePointWebSource(Source):
         """Recursively list files and subfolders."""
         logger.info("Enumerating folder: %s", server_relative_path)
         files_resp = self._sp_get_by_path(
-            client, "GetFolderByServerRelativeUrl", server_relative_path,
+            client,
+            "GetFolderByServerRelativeUrl",
+            server_relative_path,
             suffix="/Files",
             params={"$select": "Name,ServerRelativeUrl,TimeLastModified,Length,UniqueId"},
         )
@@ -224,7 +227,9 @@ class SharePointWebSource(Source):
                     changes.append(change)
 
         folders_resp = self._sp_get_by_path(
-            client, "GetFolderByServerRelativeUrl", server_relative_path,
+            client,
+            "GetFolderByServerRelativeUrl",
+            server_relative_path,
             suffix="/Folders",
             params={"$select": "Name,ServerRelativeUrl"},
         )
@@ -239,9 +244,7 @@ class SharePointWebSource(Source):
                 if sub_path:
                     self._recurse_folder(client, sub_path, changes, db)
 
-    def _file_to_change(
-        self, file_data: dict[str, Any], db: StateDB
-    ) -> DiscoveredChange | None:
+    def _file_to_change(self, file_data: dict[str, Any], db: StateDB) -> DiscoveredChange | None:
         """Convert a SharePoint file API response to a DiscoveredChange."""
         from workctx.normalise.convertibility import should_skip_download
 
@@ -321,7 +324,8 @@ class SharePointWebSource(Source):
 
         logger.info(
             "SharePoint/%s: incremental sync found %d changes",
-            self.name, len(changes),
+            self.name,
+            len(changes),
         )
         return changes
 
@@ -351,7 +355,8 @@ class SharePointWebSource(Source):
         if resp.status_code != 200:
             logger.warning(
                 "GetChanges returned HTTP %d: %s",
-                resp.status_code, resp.text[:300],
+                resp.status_code,
+                resp.text[:300],
             )
             return [], None
 
@@ -370,12 +375,9 @@ class SharePointWebSource(Source):
         """Resolve a changed item ID to a full DiscoveredChange."""
         encoded_lib = quote(self._doc_library)
         resp = client.get(
-            f"/_api/web/lists/getbytitle('{encoded_lib}')"
-            f"/items({item_id})",
+            f"/_api/web/lists/getbytitle('{encoded_lib}')/items({item_id})",
             params={
-                "$select": (
-                    "FileRef,FileLeafRef,Modified,File_x0020_Size,UniqueId"
-                ),
+                "$select": ("FileRef,FileLeafRef,Modified,File_x0020_Size,UniqueId"),
             },
         )
         if resp.status_code != 200:
@@ -407,9 +409,7 @@ class SharePointWebSource(Source):
             metadata={"library": self._doc_library},
         )
 
-    def _resolve_deletion(
-        self, item_id: int, db: StateDB
-    ) -> DiscoveredChange | None:
+    def _resolve_deletion(self, item_id: int, db: StateDB) -> DiscoveredChange | None:
         """Best-effort deletion detection by looking up stored objects."""
         for obj in db.get_objects_for_source(self.name):
             if obj.source_key and str(item_id) in str(obj.source_key):
@@ -433,23 +433,20 @@ class SharePointWebSource(Source):
         encoded = quote(escaped, safe="/")
         url = f"/_api/web/GetFileByServerRelativeUrl('{encoded}')/$value"
 
-        with tempfile.NamedTemporaryFile(
-            suffix=suffix, delete=False
-        ) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             try:
                 with client.stream("GET", url) as resp:
                     if resp.status_code != 200:
                         logger.warning(
                             "Failed to download %s: HTTP %s",
-                            server_relative_url, resp.status_code,
+                            server_relative_url,
+                            resp.status_code,
                         )
                         return None
                     for chunk in resp.iter_bytes(chunk_size=65536):
                         tmp.write(chunk)
             except httpx.HTTPError as e:
-                logger.warning(
-                    "Download error %s: %s", server_relative_url, e
-                )
+                logger.warning("Download error %s: %s", server_relative_url, e)
                 return None
         return Path(tmp.name)
 
@@ -466,11 +463,7 @@ class SharePointWebSource(Source):
         )
         if resp.status_code == 200:
             data = resp.json()
-            return (
-                data.get("d", {})
-                .get("CurrentChangeToken", {})
-                .get("StringValue")
-            )
+            return data.get("d", {}).get("CurrentChangeToken", {}).get("StringValue")
         return None
 
     def _stash_change_token(self, token: str) -> None:
@@ -544,10 +537,6 @@ class SharePointWebSource(Source):
         return headers
 
     def _should_exclude(self, filename: str, server_url: str) -> bool:
-        import fnmatch
-
-        from workctx.sources.sharepoint import _strip_glob_prefix
-
         for pattern in self.config.exclude:
             base = _strip_glob_prefix(pattern)
             if fnmatch.fnmatch(filename, base):
@@ -556,9 +545,10 @@ class SharePointWebSource(Source):
                 return True
         return False
 
-    def __del__(self) -> None:
+    def close(self) -> None:
         if self._client:
             self._client.close()
+            self._client = None
 
 
 def _parse_sp_datetime(val: str) -> datetime | None:

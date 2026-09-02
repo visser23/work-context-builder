@@ -51,8 +51,7 @@ class JiraAdapter(Source):
         secret = get_secret(self.config.auth.secret_ref or "")
         if not secret:
             issues.append(
-                f"{self.name}: no API token found for secret_ref "
-                f"'{self.config.auth.secret_ref}'"
+                f"{self.name}: no API token found for secret_ref '{self.config.auth.secret_ref}'"
             )
         return issues
 
@@ -134,11 +133,7 @@ class JiraAdapter(Source):
             jql = f"project IN ({projects_clause}) ORDER BY updated ASC"
         else:
             since = self._checkpoint_with_overlap(checkpoint.last_checkpoint)
-            jql = (
-                f"project IN ({projects_clause}) "
-                f'AND updated >= "{since}" '
-                f"ORDER BY updated ASC"
-            )
+            jql = f'project IN ({projects_clause}) AND updated >= "{since}" ORDER BY updated ASC'
 
         logger.info("Jira/%s: JQL = %s", self.name, jql)
         changes: list[DiscoveredChange] = []
@@ -316,7 +311,6 @@ class JiraAdapter(Source):
             lines.append("## Links")
             lines.append("")
             for link in links:
-                link.get("type", {}).get("name", "")
                 if "outwardIssue" in link:
                     target = link["outwardIssue"]
                     direction = link.get("type", {}).get("outward", "relates to")
@@ -363,9 +357,7 @@ class JiraAdapter(Source):
 
         return "\n".join(lines)
 
-    def _fetch_comments(
-        self, client: httpx.Client, issue_id: str
-    ) -> list[dict[str, Any]]:
+    def _fetch_comments(self, client: httpx.Client, issue_id: str) -> list[dict[str, Any]]:
         """Fetch all comments for an issue, handling pagination."""
         comments: list[dict[str, Any]] = []
         start_at = 0
@@ -392,9 +384,7 @@ class JiraAdapter(Source):
         try:
             resp = client.get("/field")
             if resp.status_code == 200:
-                self._field_map = {
-                    f["id"]: f.get("name", f["id"]) for f in resp.json()
-                }
+                self._field_map = {f["id"]: f.get("name", f["id"]) for f in resp.json()}
             else:
                 self._field_map = {}
         except Exception:
@@ -421,7 +411,8 @@ class JiraAdapter(Source):
     def _render_custom_fields(self, fields: dict[str, Any]) -> list[str]:
         lines: list[str] = []
         rendered_any = False
-        assert self._field_map is not None
+        if not self._field_map:
+            return lines
         for field_id, field_name in self._field_map.items():
             if not field_id.startswith("customfield_"):
                 continue
@@ -454,15 +445,15 @@ class JiraAdapter(Source):
     def _checkpoint_with_overlap(self, checkpoint: str) -> str:
         try:
             dt = datetime.fromisoformat(checkpoint)
-            overlap = timedelta(minutes=(self.config.auth.username and 15) or 15)
-            adjusted = dt - overlap
+            adjusted = dt - timedelta(minutes=15)
             return adjusted.strftime("%Y-%m-%d %H:%M")
         except ValueError:
             return checkpoint
 
-    def __del__(self) -> None:
+    def close(self) -> None:
         if self._client:
             self._client.close()
+            self._client = None
 
 
 def _nested_name(obj: Any, key: str = "name") -> str:

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -33,6 +35,7 @@ from workctx.models import (
     SyncResult,
 )
 from workctx.normalise.common import content_hash, split_large_document, wrap_with_front_matter
+from workctx.progress import SyncProgress
 from workctx.sources.base import Source
 from workctx.state import StateDB
 
@@ -48,7 +51,6 @@ def run_sync(
     quiet: bool = False,
 ) -> SyncResult:
     """Execute a full sync across all configured sources."""
-    from workctx.progress import SyncProgress
 
     result = SyncResult(
         run_id=run_id,
@@ -77,8 +79,14 @@ def run_sync(
         with progress.live():
             for source in sources:
                 sr = _sync_source(
-                    source, config, db, idx, output_root,
-                    dry_run=dry_run, full=full, progress=progress,
+                    source,
+                    config,
+                    db,
+                    idx,
+                    output_root,
+                    dry_run=dry_run,
+                    full=full,
+                    progress=progress,
                 )
                 result.source_results.append(sr)
 
@@ -147,11 +155,13 @@ def _build_sources(config: ProjectConfig) -> list[Source]:
         sources.append(ConfluenceAdapter(conf_config))
 
     for lf_config in config.sources.local_folders:
-        sources.append(LocalFolderAdapter(
-            lf_config,
-            state_dir=config.state_dir,
-            output_root=config.output_root_path,
-        ))
+        sources.append(
+            LocalFolderAdapter(
+                lf_config,
+                state_dir=config.state_dir,
+                output_root=config.output_root_path,
+            )
+        )
 
     return sources
 
@@ -165,27 +175,23 @@ def _sync_source(
     *,
     dry_run: bool = False,
     full: bool = False,
-    progress: object | None = None,
+    progress: SyncProgress | None = None,
 ) -> SourceResult:
     """Sync a single source."""
-    from workctx.progress import SyncProgress
-
-    prog: SyncProgress | None = progress if isinstance(progress, SyncProgress) else None
     sr = SourceResult(source_name=source.name, source_type=source.source_type)
 
     try:
         checkpoint = db.get_checkpoint(source.name)
         should_reconcile = _should_reconcile(checkpoint, config.sync.reconciliation_days)
 
-        if prog:
-            prog.begin_discovery(source.name)
+        if progress:
+            progress.begin_discovery(source.name)
 
         changes = source.discover_changes(db, checkpoint, full=full)
         sr.objects_checked = len(changes)
 
-        skipped_count = getattr(source, '_skipped_count', 0)
-        if prog:
-            prog.end_discovery(source.name, len(changes), skipped=skipped_count)
+        if progress:
+            progress.end_discovery(source.name, len(changes))
 
         if dry_run:
             for c in changes:
@@ -204,18 +210,18 @@ def _sync_source(
                 if change.action == ChangeAction.DELETE:
                     _handle_delete(source, change, db, idx, output_root)
                     sr.objects_deleted += 1
-                    if prog:
-                        prog.advance(source.name, deleted=1)
+                    if progress:
+                        progress.advance(source.name, deleted=1)
                 else:
                     _handle_upsert(source, change, config, db, idx, output_root)
                     if change.action == ChangeAction.ADD:
                         sr.objects_added += 1
-                        if prog:
-                            prog.advance(source.name, added=1)
+                        if progress:
+                            progress.advance(source.name, added=1)
                     else:
                         sr.objects_updated += 1
-                        if prog:
-                            prog.advance(source.name, updated=1)
+                        if progress:
+                            progress.advance(source.name, updated=1)
 
                 if change.source_updated_at:
                     ts = change.source_updated_at.isoformat()
@@ -225,11 +231,13 @@ def _sync_source(
             except Exception as e:
                 sr.objects_failed += 1
                 sr.errors.append(f"{change.source_id}: {e}")
-                if prog:
-                    prog.advance(source.name, failed=1)
+                if progress:
+                    progress.advance(source.name, failed=1)
                 logger.error(
                     "Failed to process %s/%s: %s",
-                    source.name, change.source_id, e,
+                    source.name,
+                    change.source_id,
+                    e,
                     exc_info=True,
                 )
 
@@ -240,15 +248,14 @@ def _sync_source(
         new_cp = SyncCheckpoint(
             source_name=source.name,
             source_type=source.source_type,
-            last_checkpoint=latest_timestamp or (
-                checkpoint.last_checkpoint if checkpoint else None
-            ),
-            last_success=now if sr.objects_failed == 0 else (
-                checkpoint.last_success if checkpoint else None
-            ),
-            last_reconciliation=now if should_reconcile else (
-                checkpoint.last_reconciliation if checkpoint else None
-            ),
+            last_checkpoint=latest_timestamp
+            or (checkpoint.last_checkpoint if checkpoint else None),
+            last_success=now
+            if sr.objects_failed == 0
+            else (checkpoint.last_success if checkpoint else None),
+            last_reconciliation=now
+            if should_reconcile
+            else (checkpoint.last_reconciliation if checkpoint else None),
             metadata=checkpoint.metadata if checkpoint else {},
         )
         db.save_checkpoint(new_cp)
@@ -258,8 +265,8 @@ def _sync_source(
         else:
             sr.status = RunStatus.HEALTHY
 
-        if prog:
-            prog.finish_source(source.name, sr.status.value)
+        if progress:
+            progress.finish_source(source.name, sr.status.value)
 
     except Exception as e:
         sr.status = RunStatus.FAILED
@@ -292,10 +299,7 @@ def _handle_upsert(
 
     if not body_md:
         is_stub = True
-        body_md = (
-            _make_unsupported_stub(change) if change.local_path
-            else _make_empty_stub(change)
-        )
+        body_md = _make_unsupported_stub(change) if change.local_path else _make_empty_stub(change)
 
     space = change.metadata.get("space")
     project = change.metadata.get("project")
@@ -311,8 +315,7 @@ def _handle_upsert(
         space=space,
         project=project,
         relative_source_path=(
-            change.source_id if source.source_type in file_source_types
-            else None
+            change.source_id if source.source_type in file_source_types else None
         ),
     )
 
@@ -327,10 +330,7 @@ def _handle_upsert(
         issue_key=change.source_key if source.source_type == SourceType.JIRA else None,
         project=project,
         space=space,
-        source_path=(
-            change.source_id if source.source_type in file_source_types
-            else None
-        ),
+        source_path=(change.source_id if source.source_type in file_source_types else None),
         status=change.metadata.get("status"),
         source_version=change.source_version,
         updated_at=change.source_updated_at,
@@ -344,9 +344,7 @@ def _handle_upsert(
     if existing and existing.content_sha256 == c_hash:
         return
 
-    parts = split_large_document(
-        fm, body_md, config.sync.large_document_chars, output_path
-    )
+    parts = split_large_document(fm, body_md, config.sync.large_document_chars, output_path)
 
     if existing and existing.output_path and existing.output_path != output_path:
         remove_corpus_file(output_root, existing.output_path)
@@ -384,9 +382,7 @@ def _handle_upsert(
         file_mtime=change.file_mtime,
         last_processed_at=now,
         last_error="stub:conversion_failed" if is_stub else None,
-        retry_count=0 if not is_stub else (
-            (existing.retry_count + 1) if existing else 1
-        ),
+        retry_count=0 if not is_stub else ((existing.retry_count + 1) if existing else 1),
     )
     db.upsert_object(obj)
 
@@ -473,7 +469,6 @@ def _convert_local_file(file_path: Path) -> str | None:
     return None
 
 
-
 def _looks_like_text(file_path: Path) -> bool:
     """Heuristic: read first 8KB and check if it looks like text."""
     try:
@@ -528,9 +523,6 @@ def _make_empty_stub(change: DiscoveredChange) -> str:
 
 def _download_and_convert(source: Source, change: DiscoveredChange) -> str | None:
     """Download a file from SharePoint web source and convert to Markdown."""
-    import contextlib
-    import os
-
     tmp_path = source.download_file(change.source_id)
     if not tmp_path:
         return None

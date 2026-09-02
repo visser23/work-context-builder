@@ -152,9 +152,7 @@ def _sanitise_fts_query(query: str) -> str:
     cleaned = cleaned.strip()
     if not cleaned:
         return '""'
-    if '"' not in cleaned and not any(
-        op in cleaned.upper() for op in ("AND", "OR", "NOT", "NEAR")
-    ):
+    if '"' not in cleaned and not any(op in cleaned.upper() for op in ("AND", "OR", "NOT", "NEAR")):
         words = cleaned.split()
         if len(words) > 1:
             return " ".join(f'"{w}"' for w in words)
@@ -171,7 +169,7 @@ def _split_front_matter(text: str) -> tuple[dict[str, str], str]:
         return {}, text
 
     fm_text = text[3:end].strip()
-    body = text[end + 4:].strip()
+    body = text[end + 4 :].strip()
 
     fm: dict[str, str] = {}
     for line in fm_text.split("\n"):

@@ -49,8 +49,10 @@ def split_large_document(
     total_parts = len(sections)
     parts: list[tuple[FrontMatter, str, str]] = []
 
-    stem = Path(base_path).stem if base_path else "document"
-    suffix = Path(base_path).suffix if base_path else ".md"
+    base = Path(base_path)
+    parent = str(base.parent) if base.parent != Path(".") else ""
+    stem = base.stem if base_path else "document"
+    suffix = base.suffix if base_path else ".md"
 
     for i, section_body in enumerate(sections, 1):
         part_fm = front_matter.model_copy(
@@ -60,8 +62,9 @@ def split_large_document(
                 "parent_source_id": front_matter.source_id,
             }
         )
-        part_filename = f"{stem}.part-{i:03d}{suffix}"
-        parts.append((part_fm, section_body, part_filename))
+        part_name = f"{stem}.part-{i:03d}{suffix}"
+        part_path = f"{parent}/{part_name}" if parent else part_name
+        parts.append((part_fm, section_body, part_path))
 
     return parts
 

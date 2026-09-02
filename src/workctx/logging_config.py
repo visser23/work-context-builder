@@ -26,11 +26,13 @@ class SecretFilter(logging.Filter):
     )
 
     def filter(self, record: logging.LogRecord) -> bool:
-        msg = record.getMessage().lower()
+        msg = record.getMessage()
+        msg_lower = msg.lower()
         for pattern in self.REDACT_PATTERNS:
-            if pattern in msg and "=" in record.getMessage():
+            if pattern in msg_lower and ("=" in msg or "/bot" in msg_lower):
                 record.msg = f"[REDACTED - contained {pattern}]"
                 record.args = None
+                break
         return True
 
 
@@ -76,6 +78,9 @@ def setup_logging(
     ch.setFormatter(fmt)
     ch.addFilter(SecretFilter())
     root.addHandler(ch)
+
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     return log_file
 

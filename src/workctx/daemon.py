@@ -45,13 +45,8 @@ class Daemon:
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
 
-        logger.info(
-            "Daemon started for project '%s'", self.config.project.name
-        )
-        self._notify(
-            f"Work Context Mirror daemon started\n"
-            f"Project: {self.config.project.name}"
-        )
+        logger.info("Daemon started for project '%s'", self.config.project.name)
+        self._notify(f"Work Context Mirror daemon started\nProject: {self.config.project.name}")
 
         tg_poller = None
         if self.config.notifications.telegram.enabled:
@@ -69,9 +64,6 @@ class Daemon:
 
     def trigger_sync(self, *, full: bool = False, source: str = "schedule") -> str:
         """Trigger a sync run. Returns a status message."""
-        if self._syncing:
-            return "Sync already in progress."
-
         with self._sync_lock:
             if self._syncing:
                 return "Sync already in progress."
@@ -95,9 +87,7 @@ class Daemon:
                 cp = db.get_checkpoint(name)
                 count = db.count_objects(name)
                 last = (
-                    cp.last_success.strftime("%d %b %H:%M")
-                    if cp and cp.last_success
-                    else "never"
+                    cp.last_success.strftime("%d %b %H:%M") if cp and cp.last_success else "never"
                 )
                 lines.append(f"  {name}: {count:,} objects, last sync {last}")
             db.close()
@@ -118,7 +108,8 @@ class Daemon:
             for name in self.config.all_source_names():
                 cp = db.get_checkpoint(name)
                 if (
-                    cp and cp.last_success
+                    cp
+                    and cp.last_success
                     and (latest_success is None or cp.last_success > latest_success)
                 ):
                     latest_success = cp.last_success
@@ -253,9 +244,7 @@ class TelegramPoller:
                 logger.debug("Telegram poll error", exc_info=True)
                 time.sleep(POLL_INTERVAL_SECONDS)
 
-    def _handle_update(
-        self, update: dict, bot_token: str, chat_id: str
-    ) -> None:
+    def _handle_update(self, update: dict, bot_token: str, chat_id: str) -> None:
         msg = update.get("message", {})
         text = (msg.get("text") or "").strip().lower()
         from_chat = str(msg.get("chat", {}).get("id", ""))
