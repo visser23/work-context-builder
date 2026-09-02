@@ -72,6 +72,15 @@ sources:
         secret_ref: "sp-cookies"
       # First run: workctx auth login-sharepoint --source team-sharepoint
 
+  # Local folders (any directories on your filesystem)
+  local_folders:
+    - name: "project-files"
+      paths:
+        - "~/Documents/Projects"
+        - "~/Library/CloudStorage/OneDrive-Company/Shared"
+      include: ["**/*"]
+      exclude: ["**/node_modules/**", "**/.git/**", "**/dist/**"]
+
 notifications:
 
   telegram:

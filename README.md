@@ -34,8 +34,11 @@ SharePoint (OneDrive sync or browser-based)
 - **Confluence** pages -> individual Markdown files with metadata
 - **Jira** issues -> Markdown files including comments, links, custom fields
 - **SharePoint** documents (Word, PDF, Excel, and 60+ formats) -> converted Markdown
+- **Local folders** — point at any directory (OneDrive, project files, etc.)
 - Background daemon syncs daily and accepts Telegram commands
 - Only changed content is reprocessed on incremental syncs
+- Unconvertible files (video, images, binaries) are detected and skipped before download
+- Real-time progress bars with ETA during sync
 
 ## First-Run Setup
 
@@ -210,7 +213,10 @@ and detects Cloud vs. Data Center automatically. For reliability, set
 
 ## SharePoint
 
-Two modes are supported.
+Two modes are supported. **Important:** If the SharePoint library is
+already synced to your machine via OneDrive, use Mode 1 (local sync).
+Only use Mode 2 (browser-based) if the library is **not** synced locally.
+Using both for the same library will create duplicate content.
 
 ### Mode 1: OneDrive Local Sync (zero config)
 
@@ -227,9 +233,10 @@ sources:
 
 ### Mode 2: Browser-Based (no local sync needed)
 
-For SharePoint libraries not synced locally. Uses Playwright to capture
-session cookies, then calls SharePoint's REST API. On each sync, the
-daemon refreshes cookies headlessly via the persisted browser profile.
+For SharePoint libraries **not synced locally**. Downloads files over
+HTTPS via SharePoint's REST API. Unconvertible files (video, images,
+binaries >200 MB) are automatically detected from metadata and skipped
+before download.
 
 **No Microsoft app registration or admin consent required.**
 
@@ -247,6 +254,28 @@ sources:
 ```
 
 First login: `uv run workctx auth login-sharepoint --source team-sharepoint`
+
+## Local Folders
+
+Point at any local directories (OneDrive folders, project files, shared
+drives, etc.) and they'll be scanned recursively.
+
+```yaml
+sources:
+  local_folders:
+    - name: my-projects
+      paths:
+        - "~/Documents/Projects"
+        - "~/Library/CloudStorage/OneDrive-Company/Shared"
+      include: ["**/*"]
+      exclude: ["**/node_modules/**", "**/.git/**", "**/dist/**"]
+```
+
+The scanner automatically skips:
+- Its own state database and output directories
+- Common junk directories (`.git`, `node_modules`, `__pycache__`, etc.)
+- Unconvertible files (images, video, binaries) based on extension
+- Hidden files and temp files (`~$*`)
 
 ## Supported File Types
 
@@ -267,6 +296,11 @@ Work Context Mirror converts 60+ file formats to Markdown:
 
 Unknown text files are auto-detected via heuristic. Binary files that
 cannot be converted produce a metadata-only stub with a link to the original.
+
+**Automatically skipped** (never downloaded from SharePoint):
+video (`.mov`, `.mp4`), images (`.png`, `.jpg`, `.gif`), audio (`.mp3`,
+`.wav`), design files (`.fig`, `.psd`), binaries (`.exe`, `.dmg`), fonts
+(`.ttf`, `.woff`), OneNote (`.one`), and anything >200 MB.
 
 ## Telegram Notifications
 
@@ -332,6 +366,7 @@ OutputRoot/
 +-- confluence/<source>/<SPACE>/<page>.md
 +-- jira/<source>/<PROJECT>/<PROJ-123>.md
 +-- sharepoint/<source>/<path>/<document>.md
++-- local_folder/<source>/<folder>/<file>.md
 ```
 
 ## State & Logs

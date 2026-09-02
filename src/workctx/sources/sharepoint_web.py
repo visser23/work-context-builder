@@ -146,12 +146,37 @@ class SharePointWebSource(Source):
     def get_current_ids(self) -> set[str]:
         client = self._get_client()
         ids: set[str] = set()
-        items = self._list_all_items(client)
-        for item in items:
-            file_ref = item.get("FileRef", item.get("ServerRelativeUrl", ""))
-            if file_ref:
-                ids.add(file_ref)
+        base_path = self._server_relative_path or self._default_server_relative_path()
+        self._collect_ids_recursive(client, base_path, ids)
         return ids
+
+    def _collect_ids_recursive(
+        self, client: httpx.Client, server_relative_path: str, ids: set[str]
+    ) -> None:
+        files_resp = self._sp_get_by_path(
+            client, "GetFolderByServerRelativeUrl", server_relative_path,
+            suffix="/Files",
+            params={"$select": "ServerRelativeUrl"},
+        )
+        if files_resp and files_resp.status_code == 200:
+            for f in files_resp.json().get("d", {}).get("results", []):
+                url = f.get("ServerRelativeUrl", "")
+                if url:
+                    ids.add(url)
+
+        folders_resp = self._sp_get_by_path(
+            client, "GetFolderByServerRelativeUrl", server_relative_path,
+            suffix="/Folders",
+            params={"$select": "Name,ServerRelativeUrl"},
+        )
+        if folders_resp and folders_resp.status_code == 200:
+            for sub in folders_resp.json().get("d", {}).get("results", []):
+                name = sub.get("Name", "")
+                if name.startswith("_") or name == "Forms":
+                    continue
+                sub_url = sub.get("ServerRelativeUrl", "")
+                if sub_url:
+                    self._collect_ids_recursive(client, sub_url, ids)
 
     # ------------------------------------------------------------------
     # Full enumeration
@@ -218,6 +243,8 @@ class SharePointWebSource(Source):
         self, file_data: dict[str, Any], db: StateDB
     ) -> DiscoveredChange | None:
         """Convert a SharePoint file API response to a DiscoveredChange."""
+        from workctx.normalise.convertibility import should_skip_download
+
         server_url = file_data.get("ServerRelativeUrl", "")
         name = file_data.get("Name", "")
         modified = file_data.get("TimeLastModified", "")
@@ -225,6 +252,12 @@ class SharePointWebSource(Source):
         unique_id = file_data.get("UniqueId", server_url)
 
         if self._should_exclude(name, server_url):
+            return None
+
+        file_size = int(size) if size else None
+        skip, reason = should_skip_download(name, file_size)
+        if skip:
+            logger.debug("Skipping %s: %s", name, reason)
             return None
 
         existing = db.get_object(self.name, server_url)
@@ -242,7 +275,7 @@ class SharePointWebSource(Source):
             source_version=modified,
             source_updated_at=_parse_sp_datetime(modified),
             action=action,
-            file_size=int(size) if size else None,
+            file_size=file_size,
             metadata={"library": self._doc_library},
         )
 
@@ -392,25 +425,32 @@ class SharePointWebSource(Source):
     # ------------------------------------------------------------------
 
     def download_file(self, server_relative_url: str) -> Path | None:
-        """Download a file to a temp path for conversion."""
+        """Download a file to a temp path for conversion, streaming to disk."""
         client = self._get_client()
-        resp = self._sp_get_by_path(
-            client, "GetFileByServerRelativeUrl", server_relative_url,
-            suffix="/$value",
-        )
-        if not resp or resp.status_code != 200:
-            logger.warning(
-                "Failed to download %s: HTTP %s",
-                server_relative_url,
-                resp.status_code if resp else "no response",
-            )
-            return None
-
         suffix = Path(server_relative_url).suffix
+
+        escaped = server_relative_url.replace("'", "''")
+        encoded = quote(escaped, safe="/")
+        url = f"/_api/web/GetFileByServerRelativeUrl('{encoded}')/$value"
+
         with tempfile.NamedTemporaryFile(
             suffix=suffix, delete=False
         ) as tmp:
-            tmp.write(resp.content)
+            try:
+                with client.stream("GET", url) as resp:
+                    if resp.status_code != 200:
+                        logger.warning(
+                            "Failed to download %s: HTTP %s",
+                            server_relative_url, resp.status_code,
+                        )
+                        return None
+                    for chunk in resp.iter_bytes(chunk_size=65536):
+                        tmp.write(chunk)
+            except httpx.HTTPError as e:
+                logger.warning(
+                    "Download error %s: %s", server_relative_url, e
+                )
+                return None
         return Path(tmp.name)
 
     # ------------------------------------------------------------------

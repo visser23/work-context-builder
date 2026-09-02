@@ -45,8 +45,11 @@ def run_sync(
     run_id: str,
     dry_run: bool = False,
     full: bool = False,
+    quiet: bool = False,
 ) -> SyncResult:
     """Execute a full sync across all configured sources."""
+    from workctx.progress import SyncProgress
+
     result = SyncResult(
         run_id=run_id,
         started_at=datetime.now(UTC),
@@ -61,6 +64,8 @@ def run_sync(
         result.completed_at = datetime.now(UTC)
         return result
 
+    progress = SyncProgress(quiet=quiet or dry_run)
+
     try:
         db = StateDB(config.state_dir / "state.sqlite")
         idx = SearchIndex(config.state_dir / "state.sqlite")
@@ -69,12 +74,13 @@ def run_sync(
 
         sources = _build_sources(config)
 
-        for source in sources:
-            sr = _sync_source(
-                source, config, db, idx, output_root,
-                dry_run=dry_run, full=full,
-            )
-            result.source_results.append(sr)
+        with progress.live():
+            for source in sources:
+                sr = _sync_source(
+                    source, config, db, idx, output_root,
+                    dry_run=dry_run, full=full, progress=progress,
+                )
+                result.source_results.append(sr)
 
         if not dry_run:
             generate_manifest(db, output_root)
@@ -87,6 +93,9 @@ def run_sync(
 
         result.completed_at = datetime.now(UTC)
         result.status = result.aggregate_status()
+
+        if not quiet:
+            progress.print_summary()
 
         db.close()
         idx.close()
@@ -119,6 +128,7 @@ def _build_sources(config: ProjectConfig) -> list[Source]:
     """Instantiate source adapters from configuration."""
     from workctx.sources.confluence import ConfluenceAdapter
     from workctx.sources.jira import JiraAdapter
+    from workctx.sources.local_folder import LocalFolderAdapter
     from workctx.sources.sharepoint import SharePointLocalSource
     from workctx.sources.sharepoint_web import SharePointWebSource
 
@@ -136,6 +146,13 @@ def _build_sources(config: ProjectConfig) -> list[Source]:
     for conf_config in config.sources.confluence:
         sources.append(ConfluenceAdapter(conf_config))
 
+    for lf_config in config.sources.local_folders:
+        sources.append(LocalFolderAdapter(
+            lf_config,
+            state_dir=config.state_dir,
+            output_root=config.output_root_path,
+        ))
+
     return sources
 
 
@@ -148,17 +165,27 @@ def _sync_source(
     *,
     dry_run: bool = False,
     full: bool = False,
+    progress: object | None = None,
 ) -> SourceResult:
     """Sync a single source."""
+    from workctx.progress import SyncProgress
+
+    prog: SyncProgress | None = progress if isinstance(progress, SyncProgress) else None
     sr = SourceResult(source_name=source.name, source_type=source.source_type)
 
     try:
         checkpoint = db.get_checkpoint(source.name)
-
         should_reconcile = _should_reconcile(checkpoint, config.sync.reconciliation_days)
+
+        if prog:
+            prog.begin_discovery(source.name)
 
         changes = source.discover_changes(db, checkpoint, full=full)
         sr.objects_checked = len(changes)
+
+        skipped_count = getattr(source, '_skipped_count', 0)
+        if prog:
+            prog.end_discovery(source.name, len(changes), skipped=skipped_count)
 
         if dry_run:
             for c in changes:
@@ -177,12 +204,18 @@ def _sync_source(
                 if change.action == ChangeAction.DELETE:
                     _handle_delete(source, change, db, idx, output_root)
                     sr.objects_deleted += 1
+                    if prog:
+                        prog.advance(source.name, deleted=1)
                 else:
                     _handle_upsert(source, change, config, db, idx, output_root)
                     if change.action == ChangeAction.ADD:
                         sr.objects_added += 1
+                        if prog:
+                            prog.advance(source.name, added=1)
                     else:
                         sr.objects_updated += 1
+                        if prog:
+                            prog.advance(source.name, updated=1)
 
                 if change.source_updated_at:
                     ts = change.source_updated_at.isoformat()
@@ -192,6 +225,8 @@ def _sync_source(
             except Exception as e:
                 sr.objects_failed += 1
                 sr.errors.append(f"{change.source_id}: {e}")
+                if prog:
+                    prog.advance(source.name, failed=1)
                 logger.error(
                     "Failed to process %s/%s: %s",
                     source.name, change.source_id, e,
@@ -222,6 +257,9 @@ def _sync_source(
             sr.status = RunStatus.DEGRADED
         else:
             sr.status = RunStatus.HEALTHY
+
+        if prog:
+            prog.finish_source(source.name, sr.status.value)
 
     except Exception as e:
         sr.status = RunStatus.FAILED
@@ -262,6 +300,8 @@ def _handle_upsert(
     space = change.metadata.get("space")
     project = change.metadata.get("project")
 
+    file_source_types = (SourceType.SHAREPOINT, SourceType.LOCAL_FOLDER)
+
     output_path = build_output_path(
         source.source_type,
         source.name,
@@ -271,7 +311,8 @@ def _handle_upsert(
         space=space,
         project=project,
         relative_source_path=(
-            change.source_id if source.source_type == SourceType.SHAREPOINT else None
+            change.source_id if source.source_type in file_source_types
+            else None
         ),
     )
 
@@ -286,7 +327,10 @@ def _handle_upsert(
         issue_key=change.source_key if source.source_type == SourceType.JIRA else None,
         project=project,
         space=space,
-        source_path=change.source_id if source.source_type == SourceType.SHAREPOINT else None,
+        source_path=(
+            change.source_id if source.source_type in file_source_types
+            else None
+        ),
         status=change.metadata.get("status"),
         source_version=change.source_version,
         updated_at=change.source_updated_at,
@@ -397,6 +441,7 @@ def _reconcile_source(
 
 def _convert_local_file(file_path: Path) -> str | None:
     """Convert a local file to Markdown using appropriate converter."""
+    from workctx.normalise.convertibility import _TEXT_EXTENSIONS
     from workctx.normalise.office import can_handle as office_handles
     from workctx.normalise.office import convert_office
     from workctx.normalise.pdf import can_handle as pdf_handles
@@ -427,25 +472,6 @@ def _convert_local_file(file_path: Path) -> str | None:
 
     return None
 
-
-_TEXT_EXTENSIONS = {
-    ".md", ".markdown", ".txt", ".text", ".log", ".cfg", ".ini",
-    ".yaml", ".yml", ".toml", ".conf", ".config", ".properties",
-    ".env", ".editorconfig", ".gitignore", ".dockerignore",
-    ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
-    ".java", ".kt", ".kts", ".scala", ".groovy", ".gradle",
-    ".c", ".h", ".cpp", ".hpp", ".cc", ".cxx", ".cs", ".fs",
-    ".go", ".rs", ".rb", ".php", ".swift", ".m", ".mm",
-    ".r", ".R", ".jl", ".lua", ".pl", ".pm", ".ex", ".exs",
-    ".sql", ".ddl", ".dml",
-    ".sh", ".bash", ".zsh", ".fish", ".bat", ".cmd", ".ps1", ".psm1",
-    ".css", ".scss", ".less", ".sass",
-    ".tf", ".hcl", ".json5", ".graphql", ".gql", ".proto",
-    ".makefile", ".mk", ".cmake",
-    ".rst", ".adoc", ".asciidoc", ".tex", ".bib", ".wiki",
-    ".dockerfile", ".containerfile",
-    ".vue", ".svelte", ".astro",
-}
 
 
 def _looks_like_text(file_path: Path) -> bool:

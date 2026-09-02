@@ -67,22 +67,22 @@ def sync(config: str | None, dry_run: bool, verbose: bool, full: bool) -> None:
 
     result = run_sync(cfg, run_id=run_id, dry_run=dry_run, full=full)
 
-    for sr in result.source_results:
-        status_color = {"healthy": "green", "degraded": "yellow", "failed": "red"}[sr.status.value]
-        console.print(
-            f"  [{status_color}]{sr.source_type.value}/{sr.source_name}: "
-            f"{sr.status.value.upper()}[/{status_color}] — "
-            f"checked={sr.objects_checked} added={sr.objects_added} "
-            f"updated={sr.objects_updated} deleted={sr.objects_deleted} "
-            f"failed={sr.objects_failed}"
-        )
-        for err in sr.errors[:5]:
-            console.print(f"    [red]{err}[/red]")
+    if dry_run:
+        for sr in result.source_results:
+            status_color = {
+                "healthy": "green", "degraded": "yellow", "failed": "red",
+            }[sr.status.value]
+            console.print(
+                f"  [{status_color}]{sr.source_type.value}/{sr.source_name}: "
+                f"{sr.status.value.upper()}[/{status_color}] — "
+                f"checked={sr.objects_checked} added={sr.objects_added} "
+                f"updated={sr.objects_updated} deleted={sr.objects_deleted} "
+                f"failed={sr.objects_failed}"
+            )
 
-    console.print()
     overall = result.aggregate_status()
     status_color = {"healthy": "green", "degraded": "yellow", "failed": "red"}[overall.value]
-    console.print(f"Overall: [{status_color}]{overall.value.upper()}[/{status_color}]")
+    console.print(f"\nOverall: [{status_color}]{overall.value.upper()}[/{status_color}]")
     console.print(f"Log: {log_file}")
 
     if overall.value == "failed":
