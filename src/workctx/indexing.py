@@ -28,7 +28,7 @@ class SearchIndex:
     """SQLite FTS5 search index over the normalised corpus."""
 
     def __init__(self, db_path: Path) -> None:
-        self.conn = sqlite3.connect(str(db_path))
+        self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._ensure_table()
 

@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 
 MAX_SYNC_WORKERS = 12
 _HEAVY_CONVERSION_SEMAPHORE = threading.Semaphore(3)
+_DB_WRITE_LOCK = threading.Lock()
 
 
 def run_sync(
@@ -87,19 +88,26 @@ def run_sync(
 
         sources = _build_sources(config)
 
-        with progress.live():
-            for source in sources:
-                sr = _sync_source(
-                    source,
-                    config,
-                    db,
-                    idx,
-                    output_root,
-                    dry_run=dry_run,
-                    full=full,
-                    progress=progress,
-                )
-                result.source_results.append(sr)
+        with (
+            progress.live(),
+            ThreadPoolExecutor(
+                max_workers=MAX_SYNC_WORKERS, thread_name_prefix="worker",
+            ) as shared_pool,
+            ThreadPoolExecutor(
+                max_workers=len(sources), thread_name_prefix="source",
+            ) as source_pool,
+        ):
+            futures = {
+                source_pool.submit(
+                    _sync_source,
+                    source, config, db, idx, output_root,
+                    dry_run=dry_run, full=full,
+                    progress=progress, worker_pool=shared_pool,
+                ): source
+                for source in sources
+            }
+            for future in as_completed(futures):
+                result.source_results.append(future.result())
 
         if not dry_run:
             generate_manifest(db, output_root)
@@ -198,6 +206,7 @@ def _sync_source(
     dry_run: bool = False,
     full: bool = False,
     progress: SyncProgress | None = None,
+    worker_pool: ThreadPoolExecutor | None = None,
 ) -> SourceResult:
     """Sync a single source."""
     sr = SourceResult(source_name=source.name, source_type=source.source_type)
@@ -260,7 +269,8 @@ def _sync_source(
             except Exception as exc:
                 return (change, None, True, exc)
 
-        with ThreadPoolExecutor(max_workers=MAX_SYNC_WORKERS) as pool:
+        pool = worker_pool or ThreadPoolExecutor(max_workers=MAX_SYNC_WORKERS)
+        try:
             futures = {pool.submit(_process_one, c): c for c in upserts}
             for future in as_completed(futures):
                 change, body_md, is_stub, exc = future.result()
@@ -317,6 +327,9 @@ def _sync_source(
                         e,
                         exc_info=True,
                     )
+        finally:
+            if not worker_pool:
+                pool.shutdown(wait=True)
 
         if should_reconcile and not full:
             _reconcile_source(source, db, idx, output_root)
@@ -412,101 +425,105 @@ def _write_and_index(
     body_md: str | None,
     is_stub: bool,
 ) -> None:
-    """Write content to corpus and update DB/index. Must be called serially."""
-    if body_md is None:
-        body_md = _make_empty_stub(change)
-        is_stub = True
+    """Write content to corpus and update DB/index. Thread-safe via _DB_WRITE_LOCK."""
+    with _DB_WRITE_LOCK:
+        if body_md is None:
+            body_md = _make_empty_stub(change)
+            is_stub = True
 
-    label = change.source_key or change.title or change.source_id
-    space = change.metadata.get("space")
-    project = change.metadata.get("project")
+        label = change.source_key or change.title or change.source_id
+        space = change.metadata.get("space")
+        project = change.metadata.get("project")
 
-    file_source_types = (SourceType.SHAREPOINT, SourceType.LOCAL_FOLDER)
+        file_source_types = (SourceType.SHAREPOINT, SourceType.LOCAL_FOLDER)
 
-    output_path = build_output_path(
-        source.source_type,
-        source.name,
-        change.source_id,
-        source_key=change.source_key,
-        title=change.title,
-        space=space,
-        project=project,
-        relative_source_path=(
-            change.source_id if source.source_type in file_source_types else None
-        ),
-    )
-
-    now = datetime.now(UTC)
-    fm = FrontMatter(
-        source_type=source.source_type.value,
-        source_name=source.name,
-        source_id=change.source_id,
-        title=change.title or change.source_id,
-        source_url=change.source_url,
-        source_key=change.source_key,
-        issue_key=change.source_key if source.source_type == SourceType.JIRA else None,
-        project=project,
-        space=space,
-        source_path=(change.source_id if source.source_type in file_source_types else None),
-        status=change.metadata.get("status"),
-        source_version=change.source_version,
-        updated_at=change.source_updated_at,
-        synced_at=now,
-    )
-
-    full_content = wrap_with_front_matter(fm, body_md)
-    c_hash = content_hash(full_content)
-
-    existing = db.get_object(source.name, change.source_id)
-    if existing and existing.content_sha256 == c_hash:
-        if existing.source_version != change.source_version:
-            db.update_version(source.name, change.source_id, change.source_version)
-        logger.debug(
-            "%s/%s: %s → unchanged", source.source_type.value, source.name, label[:80],
+        output_path = build_output_path(
+            source.source_type,
+            source.name,
+            change.source_id,
+            source_key=change.source_key,
+            title=change.title,
+            space=space,
+            project=project,
+            relative_source_path=(
+                change.source_id if source.source_type in file_source_types else None
+            ),
         )
-        return
 
-    parts = split_large_document(fm, body_md, config.sync.large_document_chars, output_path)
-
-    if existing and existing.output_path and existing.output_path != output_path:
-        remove_corpus_file(output_root, existing.output_path)
-        idx.remove(existing.output_path)
-
-    for part_fm, part_body, part_path in parts:
-        part_content = wrap_with_front_matter(part_fm, part_body)
-        write_corpus_file(output_root, part_path, part_content)
-
-        idx.upsert(
-            output_path=part_path,
-            title=part_fm.title,
-            body=part_body[:50000],
+        now = datetime.now(UTC)
+        fm = FrontMatter(
             source_type=source.source_type.value,
             source_name=source.name,
-            source_key=change.source_key or "",
+            source_id=change.source_id,
+            title=change.title or change.source_id,
             source_url=change.source_url,
-            updated_at=change.source_updated_at.isoformat() if change.source_updated_at else None,
+            source_key=change.source_key,
+            issue_key=change.source_key if source.source_type == SourceType.JIRA else None,
+            project=project,
+            space=space,
+            source_path=(change.source_id if source.source_type in file_source_types else None),
+            status=change.metadata.get("status"),
+            source_version=change.source_version,
+            updated_at=change.source_updated_at,
+            synced_at=now,
         )
 
-    actual_output = parts[0][2] if parts else output_path
+        full_content = wrap_with_front_matter(fm, body_md)
+        c_hash = content_hash(full_content)
 
-    obj = SourceObject(
-        source_name=source.name,
-        source_type=source.source_type,
-        source_id=change.source_id,
-        source_key=change.source_key,
-        title=change.title,
-        source_url=change.source_url,
-        source_version=change.source_version,
-        source_updated_at=change.source_updated_at,
-        content_sha256=c_hash,
-        output_path=actual_output,
-        file_size=change.file_size,
-        file_mtime=change.file_mtime,
-        last_processed_at=now,
-        last_error="stub:conversion_failed" if is_stub else None,
-        retry_count=0 if not is_stub else ((existing.retry_count + 1) if existing else 1),
-    )
-    db.upsert_object(obj)
+        existing = db.get_object(source.name, change.source_id)
+        if existing and existing.content_sha256 == c_hash:
+            if existing.source_version != change.source_version:
+                db.update_version(source.name, change.source_id, change.source_version)
+            logger.debug(
+                "%s/%s: %s → unchanged",
+                source.source_type.value, source.name, label[:80],
+            )
+            return
+
+        parts = split_large_document(fm, body_md, config.sync.large_document_chars, output_path)
+
+        if existing and existing.output_path and existing.output_path != output_path:
+            remove_corpus_file(output_root, existing.output_path)
+            idx.remove(existing.output_path)
+
+        for part_fm, part_body, part_path in parts:
+            part_content = wrap_with_front_matter(part_fm, part_body)
+            write_corpus_file(output_root, part_path, part_content)
+
+            idx.upsert(
+                output_path=part_path,
+                title=part_fm.title,
+                body=part_body[:50000],
+                source_type=source.source_type.value,
+                source_name=source.name,
+                source_key=change.source_key or "",
+                source_url=change.source_url,
+                updated_at=(
+                    change.source_updated_at.isoformat() if change.source_updated_at else None
+                ),
+            )
+
+        actual_output = parts[0][2] if parts else output_path
+
+        obj = SourceObject(
+            source_name=source.name,
+            source_type=source.source_type,
+            source_id=change.source_id,
+            source_key=change.source_key,
+            title=change.title,
+            source_url=change.source_url,
+            source_version=change.source_version,
+            source_updated_at=change.source_updated_at,
+            content_sha256=c_hash,
+            output_path=actual_output,
+            file_size=change.file_size,
+            file_mtime=change.file_mtime,
+            last_processed_at=now,
+            last_error="stub:conversion_failed" if is_stub else None,
+            retry_count=0 if not is_stub else ((existing.retry_count + 1) if existing else 1),
+        )
+        db.upsert_object(obj)
 
 
 def _handle_delete(
@@ -516,20 +533,21 @@ def _handle_delete(
     idx: SearchIndex,
     output_root: Path,
 ) -> None:
-    """Process a deletion."""
-    existing = db.get_object(source.name, change.source_id)
-    if existing and existing.output_path:
-        remove_corpus_file(output_root, existing.output_path)
-        idx.remove(existing.output_path)
+    """Process a deletion. Thread-safe via _DB_WRITE_LOCK."""
+    with _DB_WRITE_LOCK:
+        existing = db.get_object(source.name, change.source_id)
+        if existing and existing.output_path:
+            remove_corpus_file(output_root, existing.output_path)
+            idx.remove(existing.output_path)
 
-        stem = Path(existing.output_path).stem
-        parent = Path(existing.output_path).parent
-        for part_file in (output_root / parent).glob(f"{stem}.part-*"):
-            rel = str(part_file.relative_to(output_root))
-            part_file.unlink(missing_ok=True)
-            idx.remove(rel)
+            stem = Path(existing.output_path).stem
+            parent = Path(existing.output_path).parent
+            for part_file in (output_root / parent).glob(f"{stem}.part-*"):
+                rel = str(part_file.relative_to(output_root))
+                part_file.unlink(missing_ok=True)
+                idx.remove(rel)
 
-    db.delete_object(source.name, change.source_id)
+        db.delete_object(source.name, change.source_id)
 
 
 def _reconcile_source(
