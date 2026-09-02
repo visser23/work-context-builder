@@ -67,7 +67,7 @@ through configuration, and optionally runs the first sync.
 **macOS / Linux:**
 
 ```bash
-git clone https://github.com/visser23/work-context-builder.git
+git clone https://github.com/youruser/work-context-builder.git
 cd work-context-builder
 bash setup.sh
 ```
@@ -75,7 +75,7 @@ bash setup.sh
 **Windows (PowerShell):**
 
 ```powershell
-git clone https://github.com/visser23/work-context-builder.git
+git clone https://github.com/youruser/work-context-builder.git
 cd work-context-builder
 .\setup.ps1
 ```
@@ -97,7 +97,7 @@ irm https://astral.sh/uv/install.ps1 | iex
 **Install the project:**
 
 ```bash
-git clone https://github.com/visser23/work-context-builder.git
+git clone https://github.com/youruser/work-context-builder.git
 cd work-context-builder
 uv sync
 ```
@@ -653,7 +653,7 @@ You can override this with `state_dir` in your config.
 
 ```bash
 uv sync --extra dev
-uv run pytest                    # 151 tests
+uv run pytest                    # 162 tests
 uv run ruff check src/ tests/   # lint
 uv run ruff format src/ tests/  # format
 ```

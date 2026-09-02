@@ -5,6 +5,10 @@ from __future__ import annotations
 import logging
 import zipfile
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from markitdown import MarkItDown
 
 logger = logging.getLogger(__name__)
 
@@ -34,16 +38,13 @@ SUPPORTED_EXTENSIONS = {
     ".ipynb",
 }
 
-# Extensions where the zip-based pre-flight is applicable
 _OOXML_EXTENSIONS = {".docx", ".pptx", ".xlsx", ".xlsm", ".xlsb", ".epub"}
-
-# Skip OOXML files whose uncompressed content exceeds this (150 MB)
 _MAX_UNCOMPRESSED_SIZE = 150 * 1024 * 1024
 
-_converter = None
+_converter: MarkItDown | None = None
 
 
-def _get_converter():  # type: ignore[no-untyped-def]
+def _get_converter() -> MarkItDown:
     global _converter
     if _converter is None:
         from markitdown import MarkItDown
@@ -83,27 +84,17 @@ def preflight_office(file_path: Path) -> tuple[bool, str]:
             if zf.testzip() is not None:
                 return False, "corrupt ZIP structure"
 
-            # Check for encryption marker
             if "EncryptedPackage" in zf.namelist():
                 return False, "encrypted/password-protected"
 
-            # Calculate total uncompressed size
             total_uncompressed = sum(info.file_size for info in zf.infolist())
             if total_uncompressed > _MAX_UNCOMPRESSED_SIZE:
                 mb = total_uncompressed / (1024 * 1024)
                 return False, f"uncompressed content too large ({mb:.0f} MB)"
 
-            # For PPTX: count slides and check for huge embedded media
             if suffix == ".pptx":
-                media_files = [
-                    f for f in zf.namelist()
-                    if f.startswith("ppt/media/")
-                ]
-                media_size = sum(
-                    zf.getinfo(f).file_size
-                    for f in media_files
-                    if f in [i.filename for i in zf.infolist()]
-                )
+                media_files = [f for f in zf.namelist() if f.startswith("ppt/media/")]
+                media_size = sum(zf.getinfo(f).file_size for f in media_files)
                 if media_size > 80 * 1024 * 1024:
                     mb = media_size / (1024 * 1024)
                     return False, f"heavy embedded media ({mb:.0f} MB)"

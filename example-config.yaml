@@ -18,7 +18,7 @@ schedule:
 sync:
   overlap_minutes: 15
   reconciliation_days: 7
-  max_concurrency: 4
+  max_concurrency: 12
   large_document_chars: 300000
 
 sources:

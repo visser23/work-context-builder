@@ -81,7 +81,6 @@ def preflight_pdf(file_path: Path) -> PreflightResult:
         if page_count == 0:
             return PreflightResult(False, skip_reason="zero pages")
 
-        # Sample first few pages for a text layer
         sample_n = min(TEXT_SAMPLE_PAGES, page_count)
         total_chars = 0
         for i in range(sample_n):
@@ -91,8 +90,7 @@ def preflight_pdf(file_path: Path) -> PreflightResult:
         avg_chars = total_chars / sample_n if sample_n else 0
 
         if avg_chars < MIN_TEXT_PER_PAGE:
-            # Likely scanned/image-only — pymupdf4llm won't extract text
-            # without OCR, so processing is pointless
+            # pymupdf4llm won't extract text without OCR
             size_mb = file_size / (1024 * 1024)
             return PreflightResult(
                 False,
@@ -117,7 +115,7 @@ def preflight_pdf(file_path: Path) -> PreflightResult:
         doc.close()
 
 
-def convert_pdf(file_path: Path, *, use_docling_fallback: bool = False) -> str | None:
+def convert_pdf(file_path: Path) -> str | None:
     """Convert a PDF to Markdown.
 
     Runs a pre-flight metadata check first, then spawns pymupdf4llm in a
@@ -172,16 +170,4 @@ def convert_pdf(file_path: Path, *, use_docling_fallback: bool = False) -> str |
         logger.warning("PDF conversion produced no usable text: %s", file_path)
         return None
 
-    if _quality_ok(text):
-        return text
-
     return text
-
-
-def _quality_ok(text: str) -> bool:
-    """Basic quality check — reject near-empty or garbled output."""
-    stripped = text.strip()
-    if len(stripped) < 50:
-        return False
-    alpha_ratio = sum(1 for c in stripped if c.isalpha()) / max(len(stripped), 1)
-    return not alpha_ratio < 0.3

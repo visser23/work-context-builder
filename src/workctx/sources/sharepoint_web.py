@@ -13,6 +13,7 @@ import fnmatch
 import logging
 import os
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +32,7 @@ from workctx.config import SharePointSource
 from workctx.models import (
     ChangeAction,
     DiscoveredChange,
+    SourceObject,
     SourceType,
     SyncCheckpoint,
 )
@@ -41,7 +43,6 @@ from workctx.state import StateDB
 logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = 120.0
-MAX_ENUMERATE_WORKERS = 12
 
 _CHROMIUM_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -53,9 +54,11 @@ _CHROMIUM_UA = (
 class SharePointWebSource(Source):
     """SharePoint via browser cookies + REST API."""
 
-    def __init__(self, config: SharePointSource) -> None:
+    def __init__(self, config: SharePointSource, *, max_workers: int = 12) -> None:
         self.config = config
+        self._max_workers = max(1, max_workers)
         self._client: httpx.Client | None = None
+        self._latest_change_token: str | None = None
         self._site_url = (config.site_url or "").rstrip("/")
         self._doc_library = config.doc_library or "Shared Documents"
         self._server_relative_path = config.server_relative_path
@@ -196,7 +199,7 @@ class SharePointWebSource(Source):
             return child_folders
 
         pending = [base_path]
-        with ThreadPoolExecutor(max_workers=MAX_ENUMERATE_WORKERS) as pool:
+        with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
             while pending:
                 futures = {pool.submit(_collect_folder, p): p for p in pending}
                 pending = []
@@ -208,16 +211,10 @@ class SharePointWebSource(Source):
 
         return ids
 
-    # ------------------------------------------------------------------
-    # Full enumeration
-    # ------------------------------------------------------------------
-
     def _full_enumerate(self, client: httpx.Client, db: StateDB) -> list[DiscoveredChange]:
         """Walk the full document library concurrently and return all files."""
         base_path = self._server_relative_path or self._default_server_relative_path()
 
-        # Pre-load all known objects for this source into memory to avoid
-        # per-file DB lookups during enumeration.
         known = {
             obj.source_id: obj
             for obj in db.get_objects_for_source(self.name)
@@ -242,7 +239,7 @@ class SharePointWebSource(Source):
                 results = files_resp.json().get("d", {}).get("results", [])
                 batch: list[DiscoveredChange] = []
                 for f in results:
-                    change = self._file_to_change_fast(f, known)
+                    change = self._file_to_change(f, known)
                     if change:
                         batch.append(change)
                 if batch:
@@ -267,9 +264,8 @@ class SharePointWebSource(Source):
 
             return child_folders
 
-        # BFS with thread pool: enumerate folders concurrently
         pending = [base_path]
-        with ThreadPoolExecutor(max_workers=MAX_ENUMERATE_WORKERS) as pool:
+        with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
             while pending:
                 futures = {pool.submit(_enum_folder, p): p for p in pending}
                 pending = []
@@ -293,10 +289,9 @@ class SharePointWebSource(Source):
         )
         return changes
 
-    def _file_to_change_fast(
-        self, file_data: dict[str, Any], known: dict[str, Any],
+    def _file_to_change(
+        self, file_data: dict[str, Any], known: dict[str, SourceObject],
     ) -> DiscoveredChange | None:
-        """Fast version of _file_to_change using pre-loaded known objects dict."""
         from workctx.normalise.convertibility import should_skip_download
 
         server_url = file_data.get("ServerRelativeUrl", "")
@@ -332,48 +327,6 @@ class SharePointWebSource(Source):
             file_size=file_size,
             metadata={"library": self._doc_library},
         )
-
-    def _file_to_change(self, file_data: dict[str, Any], db: StateDB) -> DiscoveredChange | None:
-        """Convert a SharePoint file API response to a DiscoveredChange."""
-        from workctx.normalise.convertibility import should_skip_download
-
-        server_url = file_data.get("ServerRelativeUrl", "")
-        name = file_data.get("Name", "")
-        modified = file_data.get("TimeLastModified", "")
-        size = file_data.get("Length")
-        unique_id = file_data.get("UniqueId", server_url)
-
-        if self._should_exclude(name, server_url):
-            return None
-
-        file_size = int(size) if size else None
-        skip, reason = should_skip_download(name, file_size)
-        if skip:
-            logger.debug("Skipping %s: %s", name, reason)
-            return None
-
-        existing = db.get_object(self.name, server_url)
-        if existing and existing.source_version == modified and not existing.last_error:
-            return None
-
-        action = ChangeAction.ADD if not existing else ChangeAction.UPDATE
-        source_url = f"{self._site_url}{server_url}"
-
-        return DiscoveredChange(
-            source_id=server_url,
-            source_key=unique_id,
-            title=Path(name).stem,
-            source_url=source_url,
-            source_version=modified,
-            source_updated_at=_parse_sp_datetime(modified),
-            action=action,
-            file_size=file_size,
-            metadata={"library": self._doc_library},
-        )
-
-    # ------------------------------------------------------------------
-    # Incremental via GetChanges
-    # ------------------------------------------------------------------
 
     def _incremental_via_getchanges(
         self,
@@ -508,10 +461,6 @@ class SharePointWebSource(Source):
                 )
         return None
 
-    # ------------------------------------------------------------------
-    # File download
-    # ------------------------------------------------------------------
-
     def download_file(self, server_relative_url: str) -> Path | None:
         """Download a file to a temp path for conversion, streaming to disk.
 
@@ -539,7 +488,6 @@ class SharePointWebSource(Source):
                                 "Throttled downloading %s, waiting %ds",
                                 server_relative_url, retry,
                             )
-                            import time
                             time.sleep(retry)
                             continue
                         if resp.status_code != 200:
@@ -564,10 +512,6 @@ class SharePointWebSource(Source):
         logger.warning("All download attempts failed for %s", server_relative_url)
         return None
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
     def _get_current_change_token(self, client: httpx.Client) -> str | None:
         """Get the current ChangeToken from the document library."""
         encoded_lib = quote(self._doc_library)
@@ -581,11 +525,6 @@ class SharePointWebSource(Source):
         return None
 
     def _stash_change_token(self, token: str) -> None:
-        """Store change token for next incremental sync.
-
-        The token is returned via the checkpoint mechanism in sync.py.
-        We store it on the instance so it can be read back.
-        """
         self._latest_change_token = token
 
     def _default_server_relative_path(self) -> str:

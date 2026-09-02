@@ -39,7 +39,6 @@ def run_doctor(config_path: Path, *, verbose: bool = False) -> bool:
     console.print("[bold]Work Context Mirror — Doctor[/bold]")
     console.print()
 
-    # 1. Config file
     console.print("[bold]Configuration[/bold]")
     try:
         config = load_config(config_path)
@@ -49,13 +48,11 @@ def run_doctor(config_path: Path, *, verbose: bool = False) -> bool:
         console.print(f"\n[red]{checks_failed} failed[/red]")
         return False
 
-    # 2. Project info
     console.print()
     console.print("[bold]Project[/bold]")
     ok(f"ID: {config.project.id}")
     ok(f"Name: {config.project.name}")
 
-    # 3. Output directory
     console.print()
     console.print("[bold]Output Directory[/bold]")
     output = config.output_root_path
@@ -68,7 +65,6 @@ def run_doctor(config_path: Path, *, verbose: bool = False) -> bool:
     else:
         warn(f"Does not exist (will be created): {output}")
 
-    # 4. State directory
     console.print()
     console.print("[bold]State Directory[/bold]")
     state_dir = config.state_dir
@@ -77,7 +73,6 @@ def run_doctor(config_path: Path, *, verbose: bool = False) -> bool:
     else:
         warn(f"Does not exist (will be created): {state_dir}")
 
-    # 5. SQLite + FTS5
     console.print()
     console.print("[bold]SQLite[/bold]")
     try:
@@ -88,7 +83,6 @@ def run_doctor(config_path: Path, *, verbose: bool = False) -> bool:
     except Exception as e:
         fail(f"SQLite FTS5 not available: {e}")
 
-    # 6. Document converters
     console.print()
     console.print("[bold]Document Converters[/bold]")
     try:
@@ -113,7 +107,6 @@ def run_doctor(config_path: Path, *, verbose: bool = False) -> bool:
         if verbose:
             warn("Docling not installed (optional)")
 
-    # 7. Sources
     console.print()
     console.print("[bold]Sources[/bold]")
 
@@ -170,7 +163,6 @@ def run_doctor(config_path: Path, *, verbose: bool = False) -> bool:
                     f"Run: workctx auth set {conf.auth.secret_ref}"
                 )
 
-    # 8. Notifications
     console.print()
     console.print("[bold]Notifications[/bold]")
     if config.notifications.telegram.enabled:
@@ -190,7 +182,6 @@ def run_doctor(config_path: Path, *, verbose: bool = False) -> bool:
     if config.notifications.macos.enabled:
         ok("macOS notifications enabled")
 
-    # 9. Scheduler
     console.print()
     console.print("[bold]Scheduler[/bold]")
     from workctx.scheduler import get_schedule_status
@@ -205,7 +196,6 @@ def run_doctor(config_path: Path, *, verbose: bool = False) -> bool:
     else:
         warn("No schedule installed. Run: workctx install-schedule")
 
-    # Summary
     console.print()
     console.print("[bold]Summary[/bold]")
     if checks_failed == 0:

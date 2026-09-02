@@ -97,8 +97,6 @@ class StateDB:
     def close(self) -> None:
         self.conn.close()
 
-    # -- Checkpoint operations --
-
     def get_checkpoint(self, source_name: str) -> SyncCheckpoint | None:
         row = self.conn.execute(
             "SELECT * FROM sync_checkpoints WHERE source_name = ?",
@@ -133,8 +131,6 @@ class StateDB:
             ),
         )
         self.conn.commit()
-
-    # -- Source object operations --
 
     def get_object(self, source_name: str, source_id: str) -> SourceObject | None:
         row = self.conn.execute(
