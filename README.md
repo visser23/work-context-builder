@@ -1,4 +1,4 @@
-# Work Context Mirror
+# Work Context Builder
 
 **Turn your Confluence, Jira, SharePoint, and local files into a clean
 Markdown knowledge base that any AI can read.**
