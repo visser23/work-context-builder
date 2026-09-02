@@ -74,7 +74,7 @@ def setup_logging(
     root.addHandler(fh)
 
     ch = logging.StreamHandler(sys.stderr)
-    ch.setLevel(logging.DEBUG if verbose else logging.WARNING)
+    ch.setLevel(logging.DEBUG if verbose else logging.INFO)
     ch.setFormatter(fmt)
     ch.addFilter(SecretFilter())
     root.addHandler(ch)
