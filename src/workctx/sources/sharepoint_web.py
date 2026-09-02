@@ -70,36 +70,57 @@ class SharePointWebSource(Source):
             issues.append(f"{self.name}: auth.secret_ref is required for cookie storage")
         return issues
 
-    def _refresh_cookies(self) -> dict[str, str]:
-        """Run keep-alive to refresh cookies, or load from cache."""
+    def _get_cookies(self) -> dict[str, str]:
+        """Get valid SharePoint cookies: try cache first, browser refresh as fallback."""
         secret_ref = self.config.auth.secret_ref if self.config.auth else ""
         if not secret_ref:
             raise RuntimeError(f"No secret_ref configured for {self.name}")
 
+        cached = load_cookies(secret_ref)
+        if cached:
+            if self._test_cookies(cached):
+                logger.debug("Using cached cookies for %s", self.name)
+                return cached
+            logger.info("Cached cookies stale for %s, refreshing via browser", self.name)
+
         try:
-            cookies = keepalive_and_extract(
+            fresh = keepalive_and_extract(
                 self._site_url,
                 self.name,
                 secret_ref,
             )
+            if self._test_cookies(fresh):
+                return fresh
+            logger.warning("Browser-refreshed cookies still invalid for %s", self.name)
         except Exception as e:
-            logger.warning(
-                "Keep-alive failed for %s, trying cached cookies: %s",
-                self.name,
-                e,
-            )
-            cookies = load_cookies(secret_ref)
-            if not cookies:
-                raise SessionExpiredError(
-                    f"No valid cookies for '{self.name}'. "
-                    f"Run: workctx auth login-sharepoint --source {self.name}"
-                ) from e
+            logger.warning("Keep-alive failed for %s: %s", self.name, e)
 
-        return cookies
+        raise SessionExpiredError(
+            f"No valid cookies for '{self.name}'. "
+            f"Run: workctx auth login-sharepoint --source {self.name}"
+        )
+
+    def _test_cookies(self, cookies: dict[str, str]) -> bool:
+        """Quick HTTP check that cookies actually work against the SP API."""
+        cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        try:
+            resp = httpx.get(
+                f"{self._site_url}/_api/web/title",
+                headers={
+                    "Cookie": cookie_header,
+                    "Accept": "application/json;odata=verbose",
+                    "User-Agent": _CHROMIUM_UA,
+                },
+                timeout=30,
+                follow_redirects=False,
+            )
+            return resp.status_code == 200
+        except httpx.HTTPError:
+            return False
 
     def _get_client(self) -> httpx.Client:
         if self._client is None:
-            cookies = self._refresh_cookies()
+            cookies = self._get_cookies()
 
             cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
             self._client = httpx.Client(
@@ -113,19 +134,7 @@ class SharePointWebSource(Source):
                 follow_redirects=False,
             )
 
-            self._validate_session()
-
         return self._client
-
-    def _validate_session(self) -> None:
-        """Quick check that cookies are valid."""
-        resp = self._client.get("/_api/web/title")
-        if resp.status_code in (401, 403) or resp.is_redirect:
-            raise SessionExpiredError(
-                f"SharePoint session invalid (HTTP {resp.status_code}). "
-                f"Run: workctx auth login-sharepoint --source {self.name}"
-            )
-        resp.raise_for_status()
 
     def discover_changes(
         self,
