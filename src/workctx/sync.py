@@ -88,6 +88,12 @@ def run_sync(
 
         sources = _build_sources(config)
 
+        if not sources:
+            logger.warning("No sources configured — nothing to sync")
+            result.completed_at = datetime.now(UTC)
+            result.status = RunStatus.HEALTHY
+            return result
+
         max_workers = max(1, config.sync.max_concurrency)
         with (
             progress.live(),
@@ -348,7 +354,7 @@ def _sync_source(
             cp_value = latest_success_ts or (checkpoint.last_checkpoint if checkpoint else None)
         cp_metadata = dict(checkpoint.metadata) if checkpoint and checkpoint.metadata else {}
         change_token = getattr(source, "_latest_change_token", None)
-        if change_token:
+        if change_token and sr.objects_failed == 0:
             cp_metadata["change_token"] = change_token
 
         new_cp = SyncCheckpoint(
@@ -490,9 +496,19 @@ def _write_and_index(
 
         parts = split_large_document(fm, body_md, config.sync.large_document_chars, output_path)
 
-        if existing and existing.output_path and existing.output_path != output_path:
-            remove_corpus_file(output_root, existing.output_path)
-            idx.remove(existing.output_path)
+        if existing and existing.output_path:
+            if existing.output_path != output_path:
+                remove_corpus_file(output_root, existing.output_path)
+                idx.remove(existing.output_path)
+
+            old_stem = Path(existing.output_path).stem
+            old_parent = Path(existing.output_path).parent
+            old_dir = output_root / old_parent
+            if old_dir.exists():
+                for stale in old_dir.glob(f"{old_stem}.part-*"):
+                    rel = str(stale.relative_to(output_root))
+                    stale.unlink(missing_ok=True)
+                    idx.remove(rel)
 
         for part_fm, part_body, part_path in parts:
             part_content = wrap_with_front_matter(part_fm, part_body)
@@ -529,6 +545,7 @@ def _write_and_index(
             last_processed_at=now,
             last_error="stub:conversion_failed" if is_stub else None,
             retry_count=0 if not is_stub else ((existing.retry_count + 1) if existing else 1),
+            sp_item_id=change.metadata.get("sp_item_id"),
         )
         db.upsert_object(obj)
 

@@ -127,6 +127,71 @@ class TestSPDateTimeParsing:
         assert _parse_sp_datetime("not-a-date") is None
 
 
+class TestResolveDeletion:
+    """_resolve_deletion should use exact sp_item_id lookup, not substring matching."""
+
+    def _make_source(self) -> SharePointWebSource:
+        config = SharePointSource(
+            name="test-sp",
+            site_url="https://sp.com/sites/team",
+            mode="browser",
+            doc_library="Docs",
+            auth=AuthConfig(mode="browser", secret_ref="sp-cookies"),
+        )
+        return SharePointWebSource(config)
+
+    def test_finds_object_by_sp_item_id(self, tmp_path):
+        from workctx.models import SourceObject, SourceType
+        from workctx.state import StateDB
+
+        db = StateDB(tmp_path / "test.sqlite")
+        obj = SourceObject(
+            source_name="test-sp",
+            source_type=SourceType.SHAREPOINT,
+            source_id="/sites/team/Docs/report.docx",
+            title="Report",
+            sp_item_id=42,
+        )
+        db.upsert_object(obj)
+
+        source = self._make_source()
+        change = source._resolve_deletion(42, db)
+        assert change is not None
+        assert change.source_id == "/sites/team/Docs/report.docx"
+        assert change.action.value == "delete"
+        db.close()
+
+    def test_returns_none_for_unknown_item_id(self, tmp_path):
+        from workctx.state import StateDB
+
+        db = StateDB(tmp_path / "test.sqlite")
+        source = self._make_source()
+        change = source._resolve_deletion(99999, db)
+        assert change is None
+        db.close()
+
+    def test_no_false_positive_substring_match(self, tmp_path):
+        """Item ID 42 must NOT match a GUID like 'a9f3e842-...' (old bug)."""
+        from workctx.models import SourceObject, SourceType
+        from workctx.state import StateDB
+
+        db = StateDB(tmp_path / "test.sqlite")
+        obj = SourceObject(
+            source_name="test-sp",
+            source_type=SourceType.SHAREPOINT,
+            source_id="/sites/team/Docs/other.docx",
+            source_key="a9f3e842-1234-5678-abcd-000000000000",
+            title="Other",
+            sp_item_id=999,
+        )
+        db.upsert_object(obj)
+
+        source = self._make_source()
+        change = source._resolve_deletion(42, db)
+        assert change is None
+        db.close()
+
+
 class TestSharePointWebSourceExclude:
     def _make_source(self) -> SharePointWebSource:
         config = SharePointSource(

@@ -136,3 +136,59 @@ def test_auth_config_defaults():
     assert auth.mode == "api_token"
     assert auth.username is None
     assert auth.secret_ref is None
+
+
+def test_duplicate_source_names_rejected():
+    """Source names must be unique across all source types."""
+    from pydantic import ValidationError
+
+    from workctx.config import SourcesConfig
+
+    with pytest.raises(ValidationError, match="Duplicate source name"):
+        SourcesConfig(
+            jira=[
+                {
+                    "name": "my-source",
+                    "base_url": "https://test.atlassian.net",
+                    "projects": ["PROJ"],
+                    "auth": {"secret_ref": "jira-token"},
+                }
+            ],
+            confluence=[
+                {
+                    "name": "my-source",
+                    "base_url": "https://test.atlassian.net",
+                    "spaces": ["ENG"],
+                    "auth": {"secret_ref": "conf-token"},
+                }
+            ],
+        )
+
+
+def test_duplicate_names_within_same_type_rejected():
+    from pydantic import ValidationError
+
+    from workctx.config import SourcesConfig
+
+    with pytest.raises(ValidationError, match="Duplicate source name"):
+        SourcesConfig(
+            sharepoint=[
+                {"name": "docs", "local_path": "/tmp/a"},
+                {"name": "docs", "local_path": "/tmp/b"},
+            ],
+        )
+
+
+def test_unique_source_names_accepted():
+    from workctx.config import SourcesConfig
+
+    cfg = SourcesConfig(
+        sharepoint=[
+            {"name": "sp-docs", "local_path": "/tmp/a"},
+        ],
+        local_folders=[
+            {"name": "local-docs", "paths": ["/tmp/b"]},
+        ],
+    )
+    assert len(cfg.sharepoint) == 1
+    assert len(cfg.local_folders) == 1

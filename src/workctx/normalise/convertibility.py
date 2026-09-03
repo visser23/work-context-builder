@@ -179,13 +179,17 @@ MAX_DOWNLOAD_SIZE_BYTES = 200 * 1024 * 1024  # 200 MB
 
 
 def can_convert(filename: str) -> bool:
-    """Check if a file can be converted to Markdown based on extension."""
+    """Check if a file can be converted to Markdown based on extension.
+
+    Default-deny: only known convertible extensions are accepted.
+    Unknown extensions are rejected to limit converter attack surface.
+    """
     suffix = Path(filename).suffix.lower()
+    if not suffix:
+        return False
     if suffix in _NEVER_DOWNLOAD_EXTENSIONS:
         return False
-    if suffix in ALL_CONVERTIBLE_EXTENSIONS:
-        return True
-    return bool(suffix)
+    return suffix in ALL_CONVERTIBLE_EXTENSIONS
 
 
 def should_skip_download(filename: str, file_size: int | None = None) -> tuple[bool, str]:

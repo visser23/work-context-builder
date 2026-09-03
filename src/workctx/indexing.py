@@ -115,6 +115,8 @@ class SearchIndex:
                 "AGENTS.md",
                 "CLAUDE.md",
                 "README.md",
+                "CHATGPT_INSTRUCTIONS.md",
+                "PROJECT_BRIEF.md",
             ):
                 continue
 

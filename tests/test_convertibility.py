@@ -42,6 +42,18 @@ def test_can_convert(filename: str, expected: bool) -> None:
     assert can_convert(filename) == expected
 
 
+def test_can_convert_rejects_unknown_extensions() -> None:
+    """Default-deny: unknown extensions should not be accepted."""
+    assert can_convert("thing.literallyanything") is False
+    assert can_convert("data.xyz") is False
+    assert can_convert("report.custom") is False
+
+
+def test_can_convert_rejects_no_extension() -> None:
+    assert can_convert("Makefile") is False
+    assert can_convert("README") is False
+
+
 def test_should_skip_download_by_extension() -> None:
     skip, reason = should_skip_download("video.mov")
     assert skip is True

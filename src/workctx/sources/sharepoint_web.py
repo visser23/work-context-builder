@@ -233,7 +233,13 @@ class SharePointWebSource(Source):
                 "GetFolderByServerRelativeUrl",
                 folder_path,
                 suffix="/Files",
-                params={"$select": "Name,ServerRelativeUrl,TimeLastModified,Length,UniqueId"},
+                params={
+                    "$select": (
+                        "Name,ServerRelativeUrl,TimeLastModified,"
+                        "Length,UniqueId,ListItemAllFields/Id"
+                    ),
+                    "$expand": "ListItemAllFields",
+                },
             )
             if files_resp and files_resp.status_code == 200:
                 results = files_resp.json().get("d", {}).get("results", [])
@@ -316,6 +322,13 @@ class SharePointWebSource(Source):
         action = ChangeAction.ADD if not existing else ChangeAction.UPDATE
         source_url = f"{self._site_url}{server_url}"
 
+        meta: dict[str, Any] = {"library": self._doc_library}
+        list_item_fields = file_data.get("ListItemAllFields")
+        if isinstance(list_item_fields, dict):
+            sp_item_id = list_item_fields.get("Id")
+            if sp_item_id is not None:
+                meta["sp_item_id"] = int(sp_item_id)
+
         return DiscoveredChange(
             source_id=server_url,
             source_key=unique_id,
@@ -325,7 +338,7 @@ class SharePointWebSource(Source):
             source_updated_at=_parse_sp_datetime(modified),
             action=action,
             file_size=file_size,
-            metadata={"library": self._doc_library},
+            metadata=meta,
         )
 
     def _incremental_via_getchanges(
@@ -414,6 +427,8 @@ class SharePointWebSource(Source):
         change_type: int,
     ) -> DiscoveredChange | None:
         """Resolve a changed item ID to a full DiscoveredChange."""
+        from workctx.normalise.convertibility import should_skip_download
+
         encoded_lib = quote(self._doc_library)
         resp = client.get(
             f"/_api/web/lists/getbytitle('{encoded_lib}')/items({item_id})",
@@ -435,6 +450,12 @@ class SharePointWebSource(Source):
         if self._should_exclude(leaf, file_ref):
             return None
 
+        file_size = int(size) if size else None
+        skip, reason = should_skip_download(leaf, file_size)
+        if skip:
+            logger.debug("Incremental skip %s: %s", leaf, reason)
+            return None
+
         existing = db.get_object(self.name, file_ref)
         action = ChangeAction.ADD if (change_type == 1 or not existing) else ChangeAction.UPDATE
 
@@ -446,19 +467,29 @@ class SharePointWebSource(Source):
             source_version=modified,
             source_updated_at=_parse_sp_datetime(modified),
             action=action,
-            file_size=int(size) if size else None,
-            metadata={"library": self._doc_library},
+            file_size=file_size,
+            metadata={"library": self._doc_library, "sp_item_id": item_id},
         )
 
     def _resolve_deletion(self, item_id: int, db: StateDB) -> DiscoveredChange | None:
-        """Best-effort deletion detection by looking up stored objects."""
-        for obj in db.get_objects_for_source(self.name):
-            if obj.source_key and str(item_id) in str(obj.source_key):
-                return DiscoveredChange(
-                    source_id=obj.source_id,
-                    title=obj.title,
-                    action=ChangeAction.DELETE,
-                )
+        """Detect a deletion by looking up the SP list item ID in the database.
+
+        Falls back to reconciliation (periodic full comparison) if the item ID
+        has never been stored — e.g. objects only ever seen via full enumeration
+        on older versions before sp_item_id tracking was added.
+        """
+        obj = db.get_object_by_sp_item_id(self.name, item_id)
+        if obj:
+            return DiscoveredChange(
+                source_id=obj.source_id,
+                title=obj.title,
+                action=ChangeAction.DELETE,
+            )
+        logger.debug(
+            "SharePoint/%s: cannot resolve deleted item_id=%d — "
+            "reconciliation will catch it",
+            self.name, item_id,
+        )
         return None
 
     def download_file(self, server_relative_url: str) -> Path | None:
