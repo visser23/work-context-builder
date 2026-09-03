@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import platform
 import shutil
 import subprocess
-import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -25,16 +25,75 @@ logger = logging.getLogger(__name__)
 
 PLIST_PREFIX = "com.workctx"
 
+_CLOUD_PATH_MARKERS = (
+    "/Library/CloudStorage/",
+    "/Library/Mobile Documents/",
+    "/OneDrive",
+    "/Dropbox/",
+    "/Google Drive/",
+)
 
-def _resolve_workctx_bin() -> str:
-    """Find the workctx binary or fall back to uv run workctx."""
+
+def _is_cloud_synced_path(path: Path) -> bool:
+    """Detect if a path is under a cloud-synced filesystem (OneDrive, iCloud, etc.)."""
+    resolved = str(path.resolve())
+    return any(marker in resolved for marker in _CLOUD_PATH_MARKERS)
+
+
+def _local_daemon_venv_dir(config: ProjectConfig) -> Path:
+    """Return a local (non-cloud) directory for the daemon's virtual environment."""
+    system = platform.system()
+    if system == "Darwin":
+        base = Path.home() / "Library" / "Application Support"
+    elif system == "Windows":
+        base = Path.home() / "AppData" / "Local"
+    else:
+        base = Path.home() / ".local" / "share"
+    return base / "WorkContextMirror" / config.project.id / "daemon-venv"
+
+
+def _build_service_command(
+    config: ProjectConfig, config_path: Path, subcommand: str,
+) -> tuple[list[str], dict[str, str]]:
+    """Build service program arguments and extra environment variables.
+
+    When the project lives on cloud-synced storage (OneDrive, iCloud,
+    Dropbox, Google Drive), the daemon's virtual environment is
+    redirected to local storage via UV_PROJECT_ENVIRONMENT to prevent
+    EDEADLK (errno 11) crashes from cloud filesystem drivers.
+    """
+    config_abs = config_path.resolve()
+    project_dir = config_abs.parent
+    extra_env: dict[str, str] = {}
+    tail = [subcommand, "--config", str(config_abs)]
+
     direct = shutil.which("workctx")
-    if direct:
-        return direct
     uv = shutil.which("uv")
+    on_cloud = _is_cloud_synced_path(project_dir)
+
+    if direct and not on_cloud:
+        return ([direct] + tail, extra_env)
+
     if uv:
-        return f"{uv} run workctx"
-    raise RuntimeError("Cannot find 'workctx' on PATH. Install the package first.")
+        args = [uv, "run", "--project", str(project_dir), "workctx"] + tail
+        if on_cloud:
+            local_venv = _local_daemon_venv_dir(config)
+            extra_env["UV_PROJECT_ENVIRONMENT"] = str(local_venv)
+            logger.info(
+                "Project on cloud storage — service venv redirected to %s",
+                local_venv,
+            )
+        return (args, extra_env)
+
+    if direct:
+        logger.warning(
+            "workctx binary is on cloud storage (%s) and 'uv' is not available. "
+            "Service may fail with EDEADLK. Install 'uv' or clone project locally.",
+            direct,
+        )
+        return ([direct] + tail, extra_env)
+
+    raise RuntimeError("Cannot find 'workctx' or 'uv' on PATH. Install the package first.")
 
 
 # ── Service install (daemon mode) ─────────────────────────────────
@@ -92,38 +151,24 @@ def _install_launchd_service(config: ProjectConfig, config_path: Path) -> str:
     agents_dir = Path.home() / "Library" / "LaunchAgents"
     agents_dir.mkdir(parents=True, exist_ok=True)
 
-    workctx_bin = _resolve_workctx_bin()
+    program_args, extra_env = _build_service_command(config, config_path, "daemon")
     label = _launchd_label(config)
     log_dir = config.state_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    if " " in workctx_bin:
-        parts = workctx_bin.split(" ", 1)
-        program_args = [
-            parts[0],
-            parts[1],
-            "daemon",
-            "--config",
-            str(config_path.resolve()),
-        ]
-    else:
-        program_args = [
-            workctx_bin,
-            "daemon",
-            "--config",
-            str(config_path.resolve()),
-        ]
+    env_vars = {
+        "PATH": "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
+        + ":"
+        + str(Path.home() / ".local" / "bin"),
+    }
+    env_vars.update(extra_env)
 
     plist: dict[str, Any] = {
         "Label": label,
         "ProgramArguments": program_args,
         "StandardOutPath": str(log_dir / "daemon-stdout.log"),
         "StandardErrorPath": str(log_dir / "daemon-stderr.log"),
-        "EnvironmentVariables": {
-            "PATH": "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
-            + ":"
-            + str(Path.home() / ".local" / "bin"),
-        },
+        "EnvironmentVariables": env_vars,
         "RunAtLoad": True,
         "KeepAlive": True,
         "ProcessType": "Background",
@@ -174,29 +219,31 @@ def _systemd_unit_path(config: ProjectConfig) -> Path:
 
 
 def _install_systemd_service(config: ProjectConfig, config_path: Path) -> str:
-    workctx_bin = _resolve_workctx_bin()
+    program_args, extra_env = _build_service_command(config, config_path, "daemon")
     unit_path = _systemd_unit_path(config)
     unit_path.parent.mkdir(parents=True, exist_ok=True)
 
-    exec_start = f"{workctx_bin} daemon --config {config_path.resolve()}"
+    exec_start = " ".join(program_args)
+    env_lines = [f"Environment=PATH=/usr/local/bin:/usr/bin:/bin:{Path.home()}/.local/bin"]
+    for k, v in extra_env.items():
+        env_lines.append(f"Environment={k}={v}")
 
-    unit = textwrap.dedent(f"""\
-        [Unit]
-        Description=Work Context Mirror daemon ({config.project.name})
-        After=network-online.target
-
-        [Service]
-        Type=simple
-        ExecStart={exec_start}
-        Restart=on-failure
-        RestartSec=30
-        Environment=PATH=/usr/local/bin:/usr/bin:/bin:{Path.home()}/.local/bin
-
-        [Install]
-        WantedBy=default.target
-    """)
-
-    unit_path.write_text(unit)
+    lines = [
+        "[Unit]",
+        f"Description=Work Context Mirror daemon ({config.project.name})",
+        "After=network-online.target",
+        "",
+        "[Service]",
+        "Type=simple",
+        f"ExecStart={exec_start}",
+        "Restart=on-failure",
+        "RestartSec=30",
+        *env_lines,
+        "",
+        "[Install]",
+        "WantedBy=default.target",
+    ]
+    unit_path.write_text("\n".join(lines) + "\n")
 
     subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
     subprocess.run(
@@ -249,16 +296,16 @@ def _windows_task_name(config: ProjectConfig) -> str:
 
 
 def _install_windows_service(config: ProjectConfig, config_path: Path) -> str:
-    workctx_bin = _resolve_workctx_bin()
+    program_args, extra_env = _build_service_command(config, config_path, "daemon")
     task_name = _windows_task_name(config)
 
-    if " " in workctx_bin:
-        parts = workctx_bin.split(" ", 1)
-        exe = parts[0]
-        args = f'{parts[1]} daemon --config "{config_path.resolve()}"'
-    else:
-        exe = workctx_bin
-        args = f'daemon --config "{config_path.resolve()}"'
+    exe = program_args[0]
+    remaining_args = " ".join(program_args[1:])
+
+    env_prefix = ""
+    if extra_env:
+        set_cmds = " && ".join(f'set "{k}={v}"' for k, v in extra_env.items())
+        env_prefix = f"cmd /c {set_cmds} && "
 
     cmd = [
         "schtasks",
@@ -266,7 +313,7 @@ def _install_windows_service(config: ProjectConfig, config_path: Path) -> str:
         "/tn",
         task_name,
         "/tr",
-        f'"{exe}" {args}',
+        f'{env_prefix}"{exe}" {remaining_args}',
         "/sc",
         "ONLOGON",
         "/rl",
@@ -334,27 +381,13 @@ def install_schedule(config: ProjectConfig, config_path: Path) -> Path:
     import plistlib
 
     LAUNCH_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
-    workctx_bin = _resolve_workctx_bin()
+    program_args, extra_env = _build_service_command(config, config_path, "sync")
     label = _plist_label(config)
     log_dir = config.state_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    if " " in workctx_bin:
-        parts = workctx_bin.split(" ", 1)
-        program_args = [
-            parts[0],
-            parts[1],
-            "sync",
-            "--config",
-            str(config_path.resolve()),
-        ]
-    else:
-        program_args = [
-            workctx_bin,
-            "sync",
-            "--config",
-            str(config_path.resolve()),
-        ]
+    env_vars = {"PATH": "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"}
+    env_vars.update(extra_env)
 
     plist: dict[str, Any] = {
         "Label": label,
@@ -365,9 +398,7 @@ def install_schedule(config: ProjectConfig, config_path: Path) -> Path:
         },
         "StandardOutPath": str(log_dir / "launchd-stdout.log"),
         "StandardErrorPath": str(log_dir / "launchd-stderr.log"),
-        "EnvironmentVariables": {
-            "PATH": "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin",
-        },
+        "EnvironmentVariables": env_vars,
         "RunAtLoad": False,
         "ProcessType": "Background",
     }
@@ -420,21 +451,28 @@ def get_schedule_status(config: ProjectConfig) -> dict[str, Any]:
 
 
 def _load_plist(plist_file: Path) -> None:
+    uid = os.getuid()
     try:
         subprocess.run(
-            ["launchctl", "load", str(plist_file)],
+            ["launchctl", "bootstrap", f"gui/{uid}", str(plist_file)],
             capture_output=True,
             timeout=10,
         )
     except Exception:
-        logger.warning("Failed to load plist", exc_info=True)
+        with contextlib.suppress(Exception):
+            subprocess.run(
+                ["launchctl", "load", str(plist_file)],
+                capture_output=True,
+                timeout=10,
+            )
 
 
 def _unload_if_loaded(label: str, plist_file: Path) -> None:
+    uid = os.getuid()
     if plist_file.exists():
         with contextlib.suppress(Exception):
             subprocess.run(
-                ["launchctl", "unload", str(plist_file)],
+                ["launchctl", "bootout", f"gui/{uid}/{label}"],
                 capture_output=True,
                 timeout=10,
             )
