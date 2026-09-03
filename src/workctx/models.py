@@ -41,6 +41,7 @@ class SourceObject(BaseModel):
     last_processed_at: datetime | None = None
     last_error: str | None = None
     retry_count: int = 0
+    sp_item_id: int | None = None
 
 
 class SyncCheckpoint(BaseModel):

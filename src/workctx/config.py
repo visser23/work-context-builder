@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class AuthConfig(BaseModel):
@@ -61,6 +61,27 @@ class SourcesConfig(BaseModel):
     jira: list[JiraSource] = Field(default_factory=list)
     sharepoint: list[SharePointSource] = Field(default_factory=list)
     local_folders: list[LocalFolderSource] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _unique_source_names(self) -> SourcesConfig:
+        names: list[str] = []
+        for src in self.confluence:
+            names.append(src.name)
+        for src in self.jira:
+            names.append(src.name)
+        for src in self.sharepoint:
+            names.append(src.name)
+        for src in self.local_folders:
+            names.append(src.name)
+        seen: set[str] = set()
+        for name in names:
+            if name in seen:
+                raise ValueError(
+                    f"Duplicate source name '{name}'. "
+                    "Source names must be unique across all source types."
+                )
+            seen.add(name)
+        return self
 
 
 class ScheduleConfig(BaseModel):

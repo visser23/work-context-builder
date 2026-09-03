@@ -138,5 +138,59 @@ def test_migration_idempotent(tmp_path):
 
     db2 = StateDB(db_path)
     version = db2.conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert version == 1
+    assert version == 2
     db2.close()
+
+
+def test_sp_item_id_column_exists(db):
+    """Schema v2 adds the sp_item_id column."""
+    cols = {
+        row[1]
+        for row in db.conn.execute("PRAGMA table_info(source_objects)").fetchall()
+    }
+    assert "sp_item_id" in cols
+
+
+def test_sp_item_id_stored_and_queried(db):
+    obj = SourceObject(
+        source_name="sp-test",
+        source_type=SourceType.SHAREPOINT,
+        source_id="/sites/team/Shared Documents/doc.docx",
+        title="Test Doc",
+        sp_item_id=42,
+    )
+    db.upsert_object(obj)
+
+    found = db.get_object_by_sp_item_id("sp-test", 42)
+    assert found is not None
+    assert found.source_id == "/sites/team/Shared Documents/doc.docx"
+    assert found.sp_item_id == 42
+
+
+def test_sp_item_id_not_found(db):
+    assert db.get_object_by_sp_item_id("nonexistent", 999) is None
+
+
+def test_sp_item_id_preserved_on_update(db):
+    """COALESCE keeps sp_item_id when a subsequent upsert passes None."""
+    obj = SourceObject(
+        source_name="sp-test",
+        source_type=SourceType.SHAREPOINT,
+        source_id="doc.docx",
+        sp_item_id=77,
+    )
+    db.upsert_object(obj)
+
+    obj_update = SourceObject(
+        source_name="sp-test",
+        source_type=SourceType.SHAREPOINT,
+        source_id="doc.docx",
+        title="Updated",
+        sp_item_id=None,
+    )
+    db.upsert_object(obj_update)
+
+    loaded = db.get_object("sp-test", "doc.docx")
+    assert loaded is not None
+    assert loaded.sp_item_id == 77
+    assert loaded.title == "Updated"

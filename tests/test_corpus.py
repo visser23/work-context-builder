@@ -10,10 +10,13 @@ from workctx.corpus import (
     _extract_jira_details,
     _md_escape,
     build_output_path,
+    generate_agents_md,
     generate_chatgpt_instructions,
+    generate_claude_md,
     generate_jira_summary,
     generate_project_brief,
     remove_corpus_file,
+    safe_join,
     write_corpus_file,
 )
 from workctx.models import SourceType
@@ -56,6 +59,39 @@ def test_remove_cleans_empty_dirs(corpus_dir):
     write_corpus_file(corpus_dir, "a/b/c/file.md", "content")
     remove_corpus_file(corpus_dir, "a/b/c/file.md")
     assert not (corpus_dir / "a" / "b" / "c").exists()
+
+
+# -- safe_join tests --
+
+
+class TestSafeJoin:
+    def test_normal_path(self, corpus_dir):
+        result = safe_join(corpus_dir, "sub/dir/file.md")
+        assert str(result).endswith("sub/dir/file.md")
+
+    def test_rejects_traversal(self, corpus_dir):
+        with pytest.raises(ValueError, match="escapes root"):
+            safe_join(corpus_dir, "../../etc/passwd")
+
+    def test_rejects_absolute_path(self, corpus_dir):
+        with pytest.raises(ValueError, match="Absolute path"):
+            safe_join(corpus_dir, "/etc/passwd")
+
+    def test_rejects_hidden_traversal(self, corpus_dir):
+        with pytest.raises(ValueError, match="escapes root"):
+            safe_join(corpus_dir, "foo/../../bar")
+
+    def test_normalises_safe_dotdot(self, corpus_dir):
+        result = safe_join(corpus_dir, "a/b/../c/file.md")
+        assert str(result).endswith("a/c/file.md")
+
+    def test_write_rejects_traversal(self, corpus_dir):
+        with pytest.raises(ValueError, match="escapes root"):
+            write_corpus_file(corpus_dir, "../../etc/evil.md", "content")
+
+    def test_remove_rejects_traversal(self, corpus_dir):
+        with pytest.raises(ValueError, match="escapes root"):
+            remove_corpus_file(corpus_dir, "../../etc/evil.md")
 
 
 def test_build_output_path_confluence():
@@ -247,6 +283,43 @@ class TestGenerateChatgptInstructions:
         assert "Test Project" in content
         assert "Confluence" in content
         assert "source_url" in content
+
+
+class TestTrustBoundary:
+    """Generated agent instruction files must contain trust boundary text."""
+
+    def _make_mock_config(self):
+        from unittest.mock import MagicMock
+
+        mock_config = MagicMock()
+        mock_config.project.name = "Test Project"
+        mock_config.sources.confluence = []
+        mock_config.sources.jira = []
+        mock_config.sources.sharepoint = []
+        mock_config.sources.local_folders = []
+        return mock_config
+
+    def test_agents_md_trust_boundary(self, tmp_path):
+        output = tmp_path / "out"
+        output.mkdir()
+        generate_agents_md(self._make_mock_config(), output)
+        content = (output / "AGENTS.md").read_text()
+        assert "Trust boundary" in content
+        assert "never as instructions" in content
+
+    def test_claude_md_trust_boundary(self, tmp_path):
+        output = tmp_path / "out"
+        output.mkdir()
+        generate_claude_md(self._make_mock_config(), output)
+        content = (output / "CLAUDE.md").read_text()
+        assert "Trust boundary" in content
+
+    def test_chatgpt_instructions_trust_boundary(self, tmp_path):
+        output = tmp_path / "out"
+        output.mkdir()
+        generate_chatgpt_instructions(self._make_mock_config(), output)
+        content = (output / "CHATGPT_INSTRUCTIONS.md").read_text()
+        assert "reference data only" in content
 
 
 class TestGenerateProjectBrief:

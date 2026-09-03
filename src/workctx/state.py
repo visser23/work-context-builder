@@ -9,7 +9,7 @@ from pathlib import Path
 
 from workctx.models import SourceObject, SourceType, SyncCheckpoint
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -57,6 +57,13 @@ MIGRATIONS: dict[int, list[str]] = {
         """
         CREATE INDEX IF NOT EXISTS idx_source_objects_output
         ON source_objects(output_path)
+        """,
+    ],
+    2: [
+        """ALTER TABLE source_objects ADD COLUMN sp_item_id INTEGER""",
+        """
+        CREATE INDEX IF NOT EXISTS idx_source_objects_sp_item
+        ON source_objects(source_name, sp_item_id)
         """,
     ],
 }
@@ -161,8 +168,9 @@ class StateDB:
             INSERT INTO source_objects
             (source_name, source_type, source_id, source_key, title, source_url,
              source_version, source_updated_at, content_sha256, output_path,
-             file_size, file_mtime, last_processed_at, last_error, retry_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             file_size, file_mtime, last_processed_at, last_error, retry_count,
+             sp_item_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source_name, source_id) DO UPDATE SET
                 source_key = excluded.source_key,
                 title = excluded.title,
@@ -175,7 +183,8 @@ class StateDB:
                 file_mtime = excluded.file_mtime,
                 last_processed_at = excluded.last_processed_at,
                 last_error = excluded.last_error,
-                retry_count = excluded.retry_count
+                retry_count = excluded.retry_count,
+                sp_item_id = COALESCE(excluded.sp_item_id, source_objects.sp_item_id)
             """,
             (
                 obj.source_name,
@@ -193,10 +202,23 @@ class StateDB:
                 _fmt_dt(obj.last_processed_at),
                 obj.last_error,
                 obj.retry_count,
+                obj.sp_item_id,
             ),
         )
         self.conn.commit()
         return cursor.lastrowid or 0
+
+    def get_object_by_sp_item_id(
+        self, source_name: str, sp_item_id: int
+    ) -> SourceObject | None:
+        """Look up a source object by its SharePoint list item ID."""
+        row = self.conn.execute(
+            "SELECT * FROM source_objects WHERE source_name = ? AND sp_item_id = ?",
+            (source_name, sp_item_id),
+        ).fetchone()
+        if not row:
+            return None
+        return _row_to_object(row)
 
     def delete_object(self, source_name: str, source_id: str) -> None:
         self.conn.execute(
@@ -259,6 +281,7 @@ def _row_to_object(row: sqlite3.Row) -> SourceObject:
         last_processed_at=_parse_dt(row["last_processed_at"]),
         last_error=row["last_error"],
         retry_count=row["retry_count"],
+        sp_item_id=row["sp_item_id"],
     )
 
 

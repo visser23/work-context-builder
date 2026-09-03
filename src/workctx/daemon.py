@@ -100,30 +100,33 @@ class Daemon:
         return "\n".join(lines)
 
     def _check_and_sync(self) -> None:
-        """Check if daily sync is due and run if needed."""
+        """Check if daily sync is due and run if needed.
+
+        Triggers when the *stalest* source exceeds the sync interval,
+        or when any source has never been synced.
+        """
         if self._syncing:
             return
 
         try:
             db = StateDB(self.config.state_dir / "state.sqlite")
-            latest_success: datetime | None = None
+            oldest_success: datetime | None = None
 
             for name in self.config.all_source_names():
                 cp = db.get_checkpoint(name)
-                if (
-                    cp
-                    and cp.last_success
-                    and (latest_success is None or cp.last_success > latest_success)
-                ):
-                    latest_success = cp.last_success
+                if not cp or not cp.last_success:
+                    oldest_success = None
+                    break
+                if oldest_success is None or cp.last_success < oldest_success:
+                    oldest_success = cp.last_success
             db.close()
         except Exception:
-            latest_success = None
+            oldest_success = None
 
         now = datetime.now(UTC)
 
-        if latest_success:
-            hours_since = (now - latest_success).total_seconds() / 3600
+        if oldest_success:
+            hours_since = (now - oldest_success).total_seconds() / 3600
             if hours_since < SYNC_INTERVAL_HOURS:
                 return
 
