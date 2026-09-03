@@ -1,8 +1,8 @@
 # Scratchpad: Work Context Mirror
 
 ## Current Status
-- All core phases complete + LLM integration polish
-- 151 tests passing, 0 lint errors
+- All core phases complete + LLM integration polish + external review hardening
+- 184 tests passing, 0 lint errors
 - Background daemon with Telegram commands (launchd KeepAlive on macOS)
 - Cross-platform service management (launchd, systemd, Task Scheduler)
 - First-run bootstrap scripts for macOS/Linux and Windows
@@ -25,6 +25,13 @@
 - Auth modes restricted to `api_token`, `pat`, `basic`, `browser` (device_code removed as unimplemented)
 
 ## Lessons
+- External review: prioritise by actual threat model (local CLI ≠ SaaS), not OWASP severity theatre.
+- SP deletion detection: never use substring matching for identity lookups — persist proper IDs.
+- Daemon freshness: use stalest (min) source, not freshest (max), to trigger daily sync.
+- Multipart cleanup: always remove ALL old parts before writing new ones to avoid corpus zombies.
+- Default-deny for file extensions: unknown types should be rejected, not optimistically converted.
+- Trust boundary disclaimers in LLM instruction files cost nothing and are responsible framing.
+- Schema migrations: SQLite ALTER TABLE ADD COLUMN + COALESCE in upsert preserves existing data cleanly.
 - `fnmatch.fnmatch` treats `**/*` literally. Must strip `**/` prefix.
 - Atlassian Cloud tokens do NOT work for Data Center instances.
 - Confluence DC API uses `/rest/api` (no `/wiki` prefix).
