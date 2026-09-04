@@ -1,5 +1,6 @@
 """Tests for SQLite state database."""
 
+import threading
 from datetime import UTC, datetime
 
 import pytest
@@ -194,3 +195,72 @@ def test_sp_item_id_preserved_on_update(db):
     assert loaded is not None
     assert loaded.sp_item_id == 77
     assert loaded.title == "Updated"
+
+
+def test_concurrent_get_checkpoint(db):
+    """Concurrent get_checkpoint calls must not raise InterfaceError."""
+    for name in ("src-a", "src-b", "src-c"):
+        db.save_checkpoint(
+            SyncCheckpoint(
+                source_name=name,
+                source_type=SourceType.JIRA,
+                last_checkpoint="2026-09-01T00:00:00",
+                last_success=datetime(2026, 9, 1, tzinfo=UTC),
+            )
+        )
+
+    errors: list[Exception] = []
+    barrier = threading.Barrier(3)
+
+    def _reader(name: str) -> None:
+        try:
+            barrier.wait(timeout=5)
+            for _ in range(50):
+                cp = db.get_checkpoint(name)
+                assert cp is not None
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_reader, args=(n,)) for n in ("src-a", "src-b", "src-c")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert errors == [], f"Concurrent reads raised: {errors}"
+
+
+def test_concurrent_upserts(db):
+    """Concurrent upsert_object calls must not corrupt data."""
+    errors: list[Exception] = []
+    barrier = threading.Barrier(3)
+
+    def _writer(source_name: str, count: int) -> None:
+        try:
+            barrier.wait(timeout=5)
+            for i in range(count):
+                db.upsert_object(
+                    SourceObject(
+                        source_name=source_name,
+                        source_type=SourceType.JIRA,
+                        source_id=f"issue-{i}",
+                        title=f"{source_name}-{i}",
+                    )
+                )
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=_writer, args=("src-a", 20)),
+        threading.Thread(target=_writer, args=("src-b", 20)),
+        threading.Thread(target=_writer, args=("src-c", 20)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert errors == [], f"Concurrent writes raised: {errors}"
+    assert db.count_objects("src-a") == 20
+    assert db.count_objects("src-b") == 20
+    assert db.count_objects("src-c") == 20
