@@ -75,7 +75,8 @@ def _build_service_command(
         return ([direct] + tail, extra_env)
 
     if uv:
-        args = [uv, "run", "--project", str(project_dir), "workctx"] + tail
+        args = [uv, "run", "--project", str(project_dir), "--extra", "playwright",
+                "workctx"] + tail
         if on_cloud:
             local_venv = _local_daemon_venv_dir(config)
             extra_env["UV_PROJECT_ENVIRONMENT"] = str(local_venv)

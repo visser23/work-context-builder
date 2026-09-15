@@ -27,6 +27,7 @@ SYNC_INTERVAL_HOURS = 24
 POLL_INTERVAL_SECONDS = 10
 LOOP_SLEEP_SECONDS = 30
 COOKIE_KEEPALIVE_HOURS = 4
+NOTIFICATION_DEDUP_HOURS = 6
 
 
 class Daemon:
@@ -40,6 +41,7 @@ class Daemon:
         self._sync_lock = threading.Lock()
         self._last_sync_attempt: datetime | None = None
         self._last_cookie_keepalive: datetime | None = None
+        self._notified_messages: dict[str, datetime] = {}
 
     def run(self) -> None:
         """Run the daemon loop until SIGTERM/SIGINT."""
@@ -48,7 +50,10 @@ class Daemon:
         signal.signal(signal.SIGINT, self._handle_signal)
 
         logger.info("Daemon started for project '%s'", self.config.project.name)
-        self._notify(f"Work Context Mirror daemon started\nProject: {self.config.project.name}")
+        self._notify(
+            f"Work Context Mirror daemon started\nProject: {self.config.project.name}",
+            force=True,
+        )
 
         tg_poller = None
         if self.config.notifications.telegram.enabled:
@@ -215,9 +220,31 @@ class Daemon:
 
         return msg
 
-    def _notify(self, message: str) -> None:
-        """Send a notification via configured channels."""
+    def _notify(self, message: str, *, force: bool = False) -> None:
+        """Send a notification via configured channels.
+
+        Deduplicates identical messages within NOTIFICATION_DEDUP_HOURS to
+        prevent notification spam (e.g. repeated SharePoint cookie failures).
+        Pass force=True to bypass deduplication (e.g. for startup messages).
+        """
         from workctx.notifications import NotificationDispatcher
+
+        now = datetime.now(UTC)
+
+        if not force:
+            # Deduplicate: extract a stable key from the first line
+            dedup_key = message.split("\n")[0]
+            last_sent = self._notified_messages.get(dedup_key)
+            if last_sent:
+                hours = (now - last_sent).total_seconds() / 3600
+                if hours < NOTIFICATION_DEDUP_HOURS:
+                    logger.debug(
+                        "Notification suppressed (sent %.1fh ago): %s",
+                        hours,
+                        dedup_key,
+                    )
+                    return
+            self._notified_messages[dedup_key] = now
 
         try:
             dispatcher = NotificationDispatcher(self.config)

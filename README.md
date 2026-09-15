@@ -102,21 +102,34 @@ cd work-context-builder
 uv sync
 ```
 
-**Optional — for SharePoint browser mode** (only if you need it):
+**Required for SharePoint browser mode:**
+
+If you use SharePoint with `mode: browser` (the default for SharePoint sources
+that aren't synced locally via OneDrive), you **must** install Playwright and
+Chromium. The daemon uses Playwright to refresh session cookies automatically:
 
 ```bash
-uv pip install playwright
+uv sync --extra playwright
 uv run playwright install chromium
 ```
+
+> **Note:** The background daemon service also needs Playwright. When you run
+> `uv run workctx install-service`, it now automatically includes `--extra playwright`
+> so the daemon's virtual environment has Playwright installed.
 
 ---
 
 ## Configuration Guide
 
-All configuration lives in **one YAML file**. You can either:
+All configuration lives in **one YAML file** named **`workctx.yaml`** (by convention).
+You can either:
 
 - Run `uv run workctx init` for an interactive wizard, or
 - Copy `example-config.yaml` to `workctx.yaml` and edit it by hand
+
+> **Config resolution:** The CLI looks for `workctx.yaml` (or `workctx.yml`)
+> first. If that doesn't exist, it picks the only YAML file in the current
+> directory. If multiple non-example YAML files exist, pass `--config <path>`.
 
 The YAML file tells Work Context Mirror:
 - Where your sources are (Confluence URL, Jira URL, SharePoint, folders)
@@ -611,13 +624,16 @@ to each source, and reports exactly what's wrong.
 
 | Problem | What to do |
 |---|---|
-| `Config file not found` | Pass `--config path/to/your-config.yaml` to every command |
-| `401 Unauthorized` on Confluence/Jira | Your token expired or is wrong. Generate a new one and `workctx auth set <ref>` |
-| `SharePoint session expired` | Run `workctx auth login-sharepoint --source <name>` again |
+| `Config file not found` | Rename your config to `workctx.yaml`, or pass `--config path/to/config.yaml` |
+| `Multiple YAML configs found` | Rename yours to `workctx.yaml` (auto-detected by convention) or use `--config` |
+| `401 Unauthorized` on Confluence/Jira | Your token expired or is wrong. Generate a new one and `uv run workctx auth set <ref>` |
+| `SharePoint session expired` | Run `uv run workctx auth login-sharepoint --source <name>` again |
+| `Playwright not installed` | Run `uv sync --extra playwright && uv run playwright install chromium` |
 | `Lock file stale` | Another sync crashed. Delete `run.lock` from the state directory |
-| `Daemon not running` | Run `workctx service-status`, then `workctx install-service` to reinstall |
+| `Daemon not running` | Run `uv run workctx service-status`, then `uv run workctx install-service` to reinstall |
 | First sync is slow | Normal — it downloads everything. Check progress bars for ETA. Subsequent syncs are fast. |
-| `No results` from search | Run `workctx reindex` to rebuild the search index |
+| `No results` from search | Run `uv run workctx reindex` to rebuild the search index |
+| Telegram spam on failures | Upgrade — the daemon now deduplicates notifications (same failure won't re-notify for 6h) |
 
 **Where are state files and logs?**
 
@@ -653,7 +669,7 @@ You can override this with `state_dir` in your config.
 
 ```bash
 uv sync --extra dev
-uv run pytest                    # 162 tests
+uv run pytest                    # 198 tests
 uv run ruff check src/ tests/   # lint
 uv run ruff format src/ tests/  # format
 ```
