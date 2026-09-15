@@ -24,12 +24,30 @@ def _find_config(config: str | None) -> Path:
             sys.exit(1)
         return p
 
+    # Prefer the conventional name workctx.yaml / workctx.yml
+    for name in ("workctx.yaml", "workctx.yml"):
+        conventional = Path.cwd() / name
+        if conventional.exists():
+            return conventional
+
     candidates = list(Path.cwd().glob(DEFAULT_CONFIG_GLOB))
     yaml_configs = [c for c in candidates if c.suffix in (".yaml", ".yml")]
+
+    # Ignore files that are clearly examples/templates
+    real_configs = [
+        c for c in yaml_configs if not c.stem.startswith("example") and c.stem != "example"
+    ]
+
+    if len(real_configs) == 1:
+        return real_configs[0]
     if len(yaml_configs) == 1:
         return yaml_configs[0]
     if len(yaml_configs) > 1:
-        console.print("[red]Multiple YAML configs found. Specify with --config.[/red]")
+        names = ", ".join(c.name for c in yaml_configs)
+        console.print(
+            f"[red]Multiple YAML configs found ({names}). "
+            f"Rename yours to workctx.yaml or specify --config.[/red]"
+        )
         sys.exit(1)
     console.print(
         "[red]No config file found. Create one with 'workctx init' or specify --config.[/red]"

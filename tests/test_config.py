@@ -192,3 +192,64 @@ def test_unique_source_names_accepted():
     )
     assert len(cfg.sharepoint) == 1
     assert len(cfg.local_folders) == 1
+
+
+class TestFindConfig:
+    """Tests for _find_config auto-detection logic."""
+
+    def _write_yaml(self, path, content="version: 1\n"):
+        path.write_text(content)
+
+    def test_prefers_workctx_yaml(self, tmp_path, monkeypatch):
+        from workctx.cli import _find_config
+
+        self._write_yaml(tmp_path / "workctx.yaml")
+        self._write_yaml(tmp_path / "example-config.yaml")
+        monkeypatch.chdir(tmp_path)
+        assert _find_config(None) == tmp_path / "workctx.yaml"
+
+    def test_prefers_workctx_yml(self, tmp_path, monkeypatch):
+        from workctx.cli import _find_config
+
+        self._write_yaml(tmp_path / "workctx.yml")
+        self._write_yaml(tmp_path / "example-config.yaml")
+        monkeypatch.chdir(tmp_path)
+        assert _find_config(None) == tmp_path / "workctx.yml"
+
+    def test_single_yaml_no_convention(self, tmp_path, monkeypatch):
+        from workctx.cli import _find_config
+
+        self._write_yaml(tmp_path / "myproject.yaml")
+        monkeypatch.chdir(tmp_path)
+        assert _find_config(None) == tmp_path / "myproject.yaml"
+
+    def test_ignores_example_when_real_config_exists(self, tmp_path, monkeypatch):
+        from workctx.cli import _find_config
+
+        self._write_yaml(tmp_path / "myproject.yaml")
+        self._write_yaml(tmp_path / "example-config.yaml")
+        monkeypatch.chdir(tmp_path)
+        assert _find_config(None) == tmp_path / "myproject.yaml"
+
+    def test_explicit_config_path(self, tmp_path):
+        from workctx.cli import _find_config
+
+        cfg = tmp_path / "custom.yaml"
+        self._write_yaml(cfg)
+        assert _find_config(str(cfg)) == cfg
+
+    def test_no_yaml_files_exits(self, tmp_path, monkeypatch):
+        from workctx.cli import _find_config
+
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SystemExit):
+            _find_config(None)
+
+    def test_multiple_real_configs_exits(self, tmp_path, monkeypatch):
+        from workctx.cli import _find_config
+
+        self._write_yaml(tmp_path / "alpha.yaml")
+        self._write_yaml(tmp_path / "beta.yaml")
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SystemExit):
+            _find_config(None)
