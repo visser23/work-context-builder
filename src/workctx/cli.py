@@ -404,4 +404,4 @@ def service_status_cmd(config: str | None) -> None:
                 console.print(f"  {k}: {v}")
     else:
         console.print("[yellow]No service installed.[/yellow]")
-        console.print("Run: workctx install-service")
+        console.print("Run: uv run workctx install-service")

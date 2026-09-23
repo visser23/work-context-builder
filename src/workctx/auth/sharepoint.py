@@ -1,9 +1,11 @@
-"""SharePoint cookie capture and keep-alive via Playwright.
+"""SharePoint cookie capture via Playwright.
 
 Supports two flows:
-1. Interactive login: opens a browser, user authenticates, cookies extracted.
-2. Keep-alive: opens browser with persisted profile, navigates to SP site to
-   refresh session cookies, extracts fresh rtFa/FedAuth.
+1. Interactive login: opens a visible browser, user authenticates, cookies extracted.
+2. Headless keepalive: opens browser with persisted profile, navigates to SP site,
+   attempts to extract fresh rtFa/FedAuth. Only works if SSO can complete without
+   user interaction (e.g. PRT/Kerberos). Falls back to manual re-login if the
+   identity provider requires interactive auth (common with ADFS/Entra ID).
 """
 
 from __future__ import annotations
@@ -132,14 +134,17 @@ def keepalive_and_extract(
     *,
     timeout_ms: int = 60_000,
 ) -> dict[str, str]:
-    """Open browser with persisted profile to refresh session cookies.
+    """Open headless browser with persisted profile to refresh session cookies.
 
     Uses the persistent profile from the last interactive login. Navigates
     to the SP site with ``domcontentloaded`` (not ``networkidle`` — SharePoint
     fires endless background requests that make ``networkidle`` unreliable).
 
-    Extracts cookies even if navigation times out, since they're set in the
-    initial HTTP response headers before the page finishes loading.
+    Only persists cookies to the credential store if they pass an HTTP
+    validation check against the SharePoint REST API. This prevents stale
+    cookies from the browser profile overwriting the keychain when the
+    identity provider (e.g. ADFS/Entra ID) requires interactive auth that
+    a headless browser cannot complete.
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -153,7 +158,7 @@ def keepalive_and_extract(
     if not (profile_dir / "Default").exists() and not any(profile_dir.iterdir()):
         raise SessionExpiredError(
             f"No browser profile found for '{source_name}'. "
-            f"Run: workctx auth login-sharepoint --source {source_name}"
+            f"Run: uv run workctx auth login-sharepoint --source {source_name}"
         )
 
     cookies: dict[str, str] = {}
@@ -186,7 +191,7 @@ def keepalive_and_extract(
                 context.close()
                 raise SessionExpiredError(
                     f"Session expired — redirected to login for '{source_name}'. "
-                    f"Run: workctx auth login-sharepoint --source {source_name}"
+                    f"Run: uv run workctx auth login-sharepoint --source {source_name}"
                 )
 
         context.close()
@@ -194,7 +199,21 @@ def keepalive_and_extract(
     if not cookies:
         raise SessionExpiredError(
             f"No session cookies after keep-alive for '{source_name}'. "
-            f"Run: workctx auth login-sharepoint --source {source_name}"
+            f"Run: uv run workctx auth login-sharepoint --source {source_name}"
+        )
+
+    # Validate before persisting — headless SSO may have failed silently,
+    # leaving stale cookies from the browser profile.
+    if not _http_test_cookies(site_url, cookies):
+        logger.info(
+            "Keepalive extracted cookies for %s but they failed HTTP validation "
+            "(headless SSO likely cannot complete for this identity provider)",
+            source_name,
+        )
+        raise SessionExpiredError(
+            f"Session cookies expired for '{source_name}' and automatic refresh "
+            f"could not re-authenticate (SSO requires interactive login).\n"
+            f"Run: uv run workctx auth login-sharepoint --source {source_name}"
         )
 
     _persist_cookies(secret_ref, cookies, site_url)
@@ -231,14 +250,11 @@ def load_cookie_blob(secret_ref: str) -> dict[str, Any] | None:
     return None
 
 
-def http_keepalive(site_url: str, cookies: dict[str, str]) -> bool:
-    """Lightweight HTTP hit to SharePoint to keep the session alive.
+def _http_test_cookies(site_url: str, cookies: dict[str, str]) -> bool:
+    """Validate cookies with a lightweight HTTP request to SharePoint REST API.
 
-    Makes a single GET to /_api/web/title. SharePoint refreshes the session
-    internally on any authenticated request, so this prevents cookie expiry
-    without needing a browser.
-
-    Returns True if the session is still valid, False if expired.
+    Returns True if the cookies authenticate successfully (HTTP 200).
+    Used internally by keepalive_and_extract to validate before persisting.
     """
     import httpx
 
@@ -254,14 +270,27 @@ def http_keepalive(site_url: str, cookies: dict[str, str]) -> bool:
             timeout=30,
             follow_redirects=False,
         )
-        if resp.status_code == 200:
-            logger.debug("Cookie keepalive OK for %s", site_url)
-            return True
-        logger.info("Cookie keepalive failed for %s: HTTP %d", site_url, resp.status_code)
+        return resp.status_code == 200
+    except Exception:
         return False
-    except Exception as e:
-        logger.info("Cookie keepalive error for %s: %s", site_url, e)
-        return False
+
+
+def http_keepalive(site_url: str, cookies: dict[str, str]) -> bool:
+    """Check whether SharePoint session cookies are still valid.
+
+    Makes a single GET to /_api/web/title. Note: this does NOT extend
+    cookie lifetime — SharePoint session cookies (rtFa/FedAuth) expire
+    on a schedule set by the identity provider (ADFS/Entra ID). This
+    function only detects expiry so the daemon can notify the user.
+
+    Returns True if the session is still valid, False if expired.
+    """
+    result = _http_test_cookies(site_url, cookies)
+    if result:
+        logger.debug("Cookie keepalive OK for %s", site_url)
+    else:
+        logger.info("Cookie keepalive failed for %s", site_url)
+    return result
 
 
 def _extract_sp_cookies(context: BrowserContext, site_url: str) -> dict[str, str]:

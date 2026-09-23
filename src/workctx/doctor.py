@@ -144,7 +144,7 @@ def run_doctor(config_path: Path, *, verbose: bool = False) -> bool:
             else:
                 fail(
                     f"No API token for {jira.auth.secret_ref}. "
-                    f"Run: workctx auth set {jira.auth.secret_ref}"
+                    f"Run: uv run workctx auth set {jira.auth.secret_ref}"
                 )
 
     for conf in config.sources.confluence:
@@ -160,7 +160,7 @@ def run_doctor(config_path: Path, *, verbose: bool = False) -> bool:
             else:
                 fail(
                     f"No API token for {conf.auth.secret_ref}. "
-                    f"Run: workctx auth set {conf.auth.secret_ref}"
+                    f"Run: uv run workctx auth set {conf.auth.secret_ref}"
                 )
 
     console.print()
@@ -325,14 +325,17 @@ def _check_sharepoint_browser(sp_config, ok, fail, warn) -> None:
             if resp.status_code == 200:
                 ok("SharePoint session valid")
             elif resp.status_code in (401, 403):
-                warn("SharePoint session expired. Run: workctx auth login-sharepoint")
+                warn(
+                    f"SharePoint session expired. "
+                    f"Run: uv run workctx auth login-sharepoint --source {sp_config.name}"
+                )
             else:
                 warn(f"SharePoint returned HTTP {resp.status_code}")
         except Exception as e:
             warn(f"SharePoint connectivity check failed: {e}")
     else:
         warn(
-            f"No SharePoint cookies — run: workctx auth login-sharepoint --source {sp_config.name}"
+            f"No SharePoint cookies — run: uv run workctx auth login-sharepoint --source {sp_config.name}"
         )
 
     profile_dir = get_profile_dir(sp_config.name)
