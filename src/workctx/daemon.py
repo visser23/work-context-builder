@@ -16,6 +16,7 @@ import signal
 import threading
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 from workctx.config import ProjectConfig, load_config
 from workctx.logging_config import generate_run_id, setup_logging
@@ -144,7 +145,7 @@ class Daemon:
         self.trigger_sync(source="daily-check")
 
     def _check_cookie_keepalive(self) -> None:
-        """Ping SharePoint periodically to keep session cookies alive."""
+        """Check SharePoint session cookie validity periodically."""
         browser_sources = [sp for sp in self.config.sources.sharepoint if sp.mode == "browser"]
         if not browser_sources:
             return
@@ -175,9 +176,12 @@ class Daemon:
             if http_keepalive(site_url, cookies):
                 logger.debug("Cookie keepalive OK for %s", sp.name)
             else:
+                project_dir = Path(self.config_path).parent
                 msg = (
                     f"SharePoint session expired for '{sp.name}'.\n"
-                    f"Run: workctx auth login-sharepoint --source {sp.name}"
+                    f"Cookies expire periodically — re-login to capture fresh ones:\n"
+                    f"cd {project_dir} && uv run workctx auth login-sharepoint "
+                    f"--source {sp.name}"
                 )
                 logger.warning(msg)
                 self._notify(msg)

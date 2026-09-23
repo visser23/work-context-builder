@@ -313,8 +313,16 @@ uv run workctx auth login-sharepoint --source team-sharepoint
 ```
 
 A browser window opens. Log in as normal. Once you're in, the tool
-captures the session cookies automatically. You'll need to re-run this
-if the cookies expire (the tool will tell you when).
+captures the session cookies automatically.
+
+> **Cookie expiry:** SharePoint session cookies typically expire after
+> 12–24 hours (controlled by your organisation's identity provider, not
+> by this tool). The daemon checks cookie validity every 4 hours and will
+> send you a Telegram notification with the exact re-login command when
+> they expire. Being logged into SharePoint in your normal browser does
+> **not** mean the tool's cookies are still valid — they are separate
+> sessions. The daemon attempts automatic refresh via headless browser,
+> but this only works if your SSO provider allows non-interactive auth.
 
 > **Where do I find `site_url` and `server_relative_path`?**
 > - Go to the SharePoint document library in your browser
@@ -498,7 +506,7 @@ running from the repo directory.
 | `workctx service-status` | Check if the daemon is running |
 | `workctx auth set <ref>` | Store a secret (token, password, etc.) |
 | `workctx auth remove <ref>` | Delete a stored secret |
-| `workctx auth login-sharepoint` | Browser login for SharePoint cookie capture |
+| `workctx auth login-sharepoint --source <name>` | Browser login for SharePoint cookie capture |
 | `workctx reconcile` | Force deletion detection across all sources |
 | `workctx reindex` | Rebuild the full-text search index |
 

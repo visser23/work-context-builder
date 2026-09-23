@@ -98,15 +98,16 @@ class SharePointWebSource(Source):
                 self.name,
                 secret_ref,
             )
-            if self._test_cookies(fresh):
-                return fresh
-            logger.warning("Browser-refreshed cookies still invalid for %s", self.name)
+            # keepalive_and_extract validates cookies before returning
+            return fresh
+        except SessionExpiredError:
+            raise
         except Exception as e:
             logger.warning("Keep-alive failed for %s: %s", self.name, e)
 
         raise SessionExpiredError(
             f"No valid cookies for '{self.name}'. "
-            f"Run: workctx auth login-sharepoint --source {self.name}"
+            f"Run: uv run workctx auth login-sharepoint --source {self.name}"
         )
 
     def _test_cookies(self, cookies: dict[str, str]) -> bool:
