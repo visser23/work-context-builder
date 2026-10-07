@@ -265,6 +265,11 @@ class TeamsTranscriptSource(Source):
         )
         return changes
 
+    def retention_cutoff(self) -> datetime | None:
+        if not self.config.since_days:
+            return None
+        return datetime.now(UTC) - timedelta(days=self.config.since_days)
+
     def get_current_ids(self) -> set[str]:
         """All recording ids currently visible. Raises on any failure (never partial)."""
         self._require_valid_config()

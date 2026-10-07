@@ -83,8 +83,7 @@ def _migrate_long_paths(db: StateDB, idx: SearchIndex, output_root: Path) -> int
 
         idx.remove(old_path)
         db.conn.execute(
-            "UPDATE source_objects SET output_path = ? "
-            "WHERE source_name = ? AND source_id = ?",
+            "UPDATE source_objects SET output_path = ? WHERE source_name = ? AND source_id = ?",
             (new_path, row["source_name"], row["source_id"]),
         )
         db.conn.commit()
@@ -137,7 +136,8 @@ def run_sync(
         if migrated:
             logger.info(
                 "Migrated %d files exceeding %d-char path limit",
-                migrated, MAX_TOTAL_PATH_CHARS,
+                migrated,
+                MAX_TOTAL_PATH_CHARS,
             )
 
         sources = _build_sources(config)
@@ -160,18 +160,26 @@ def run_sync(
         with (
             progress.live(),
             ThreadPoolExecutor(
-                max_workers=max_workers, thread_name_prefix="worker",
+                max_workers=max_workers,
+                thread_name_prefix="worker",
             ) as shared_pool,
             ThreadPoolExecutor(
-                max_workers=len(sources), thread_name_prefix="source",
+                max_workers=len(sources),
+                thread_name_prefix="source",
             ) as source_pool,
         ):
             futures = {
                 source_pool.submit(
                     _sync_source,
-                    source, config, db, idx, output_root,
-                    dry_run=dry_run, full=full,
-                    progress=progress, worker_pool=shared_pool,
+                    source,
+                    config,
+                    db,
+                    idx,
+                    output_root,
+                    dry_run=dry_run,
+                    full=full,
+                    progress=progress,
+                    worker_pool=shared_pool,
                     max_workers=max_workers,
                 ): source
                 for source in sources
@@ -237,8 +245,10 @@ def _build_sources(config: ProjectConfig) -> list[Source]:
     from workctx.sources.confluence import ConfluenceAdapter
     from workctx.sources.jira import JiraAdapter
     from workctx.sources.local_folder import LocalFolderAdapter
+    from workctx.sources.outlook import CalendarAdapter, MailAdapter
     from workctx.sources.sharepoint import SharePointLocalSource
     from workctx.sources.sharepoint_web import SharePointWebSource
+    from workctx.sources.slack import SlackAdapter
     from workctx.sources.teams_transcripts import TeamsTranscriptSource
 
     sources: list[Source] = []
@@ -269,9 +279,19 @@ def _build_sources(config: ProjectConfig) -> list[Source]:
     sp_by_name = {sp.name: sp for sp in config.sources.sharepoint}
     for tx_config in config.sources.transcripts:
         sources.append(
-            TeamsTranscriptSource(
-                tx_config, sharepoint_sources=sp_by_name, max_workers=max_workers
-            )
+            TeamsTranscriptSource(tx_config, sharepoint_sources=sp_by_name, max_workers=max_workers)
+        )
+    for mail_config in config.sources.mail:
+        sources.append(
+            MailAdapter(mail_config, sharepoint_sources=sp_by_name, max_workers=max_workers)
+        )
+    for cal_config in config.sources.calendar:
+        sources.append(
+            CalendarAdapter(cal_config, sharepoint_sources=sp_by_name, max_workers=max_workers)
+        )
+    for slack_config in config.sources.slack:
+        sources.append(
+            SlackAdapter(slack_config, sharepoint_sources=sp_by_name, max_workers=max_workers)
         )
 
     return sources
@@ -373,8 +393,14 @@ def _sync_source(
 
                 try:
                     _write_and_index(
-                        source, change, config, db, idx, output_root,
-                        body_md, is_stub,
+                        source,
+                        change,
+                        config,
+                        db,
+                        idx,
+                        output_root,
+                        body_md,
+                        is_stub,
                     )
                     if change.action == ChangeAction.ADD:
                         sr.objects_added += 1
@@ -490,7 +516,10 @@ def _fetch_and_convert(
     if not body_md:
         body_md = _make_unsupported_stub(change) if change.local_path else _make_empty_stub(change)
         logger.debug(
-            "%s/%s: %s → stub", source.source_type.value, source.name, label[:80],
+            "%s/%s: %s → stub",
+            source.source_type.value,
+            source.name,
+            label[:80],
         )
         return body_md, True
 
@@ -532,7 +561,8 @@ def _write_and_index(
             relative_source_path=(
                 change.source_id if source.source_type in file_source_types else None
             ),
-            occurred_on=change.metadata.get("meeting_date"),
+            occurred_on=change.metadata.get("occurred_on") or change.metadata.get("meeting_date"),
+            subpath=change.metadata.get("subpath"),
         )
         output_path = clamp_output_path(output_root, output_path)
 
@@ -571,7 +601,9 @@ def _write_and_index(
                 db.update_version(source.name, change.source_id, change.source_version)
             logger.debug(
                 "%s/%s: %s → unchanged",
-                source.source_type.value, source.name, label[:80],
+                source.source_type.value,
+                source.name,
+                label[:80],
             )
             return
 
@@ -655,6 +687,10 @@ def _handle_delete(
         db.delete_object(source.name, change.source_id)
 
 
+def _aware(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
 def _reconcile_source(
     source: Source,
     db: StateDB,
@@ -662,6 +698,8 @@ def _reconcile_source(
     output_root: Path,
 ) -> None:
     """Reconcile a source: find and remove deleted objects."""
+    if not source.reconcile_supported():
+        return
     try:
         current_ids = source.get_current_ids()
     except Exception:
@@ -669,6 +707,15 @@ def _reconcile_source(
         return
 
     stored_ids = db.get_all_source_ids(source.name)
+    cutoff = source.retention_cutoff()
+    if cutoff is not None:
+        # Rolling-window sources: objects older than the window are retained, not deleted.
+        retained = {
+            o.source_id
+            for o in db.get_objects_for_source(source.name)
+            if o.source_updated_at is not None and _aware(o.source_updated_at) < cutoff
+        }
+        stored_ids -= retained
     deleted_ids = stored_ids - current_ids
 
     for source_id in deleted_ids:

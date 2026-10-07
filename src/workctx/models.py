@@ -16,6 +16,9 @@ class SourceType(enum.StrEnum):
     SHAREPOINT = "sharepoint"
     LOCAL_FOLDER = "local_folder"
     TRANSCRIPT = "transcripts"
+    EMAIL = "email"
+    CALENDAR = "calendar"
+    SLACK = "slack"
 
 
 class RunStatus(enum.StrEnum):
@@ -108,6 +111,16 @@ class FrontMatter(BaseModel):
     meeting_date: str | None = None
     duration_minutes: int | None = None
     participants: list[str] | None = None
+    # Email / calendar / Slack provenance (only set for those source types)
+    sender: str | None = None
+    folder: str | None = None
+    start_at: str | None = None
+    end_at: str | None = None
+    location: str | None = None
+    organizer: str | None = None
+    workspace: str | None = None
+    channel: str | None = None
+    message_count: int | None = None
 
     def to_yaml_str(self) -> str:
         """Render as YAML front matter block."""
@@ -121,8 +134,9 @@ class FrontMatter(BaseModel):
             elif isinstance(value, int | float):
                 lines.append(f"{key}: {value}")
             else:
-                safe = str(value).replace('"', '\\"')
-                if any(c in safe for c in ":#{}[]|>&*!%@`"):
+                safe = " ".join(str(value).split())  # no newlines in a one-line scalar
+                safe = safe.replace("\\", "\\\\").replace('"', '\\"')
+                if any(c in safe for c in ":#{}[]|>&*!%@`\\"):
                     lines.append(f'{key}: "{safe}"')
                 else:
                     lines.append(f"{key}: {safe}")
