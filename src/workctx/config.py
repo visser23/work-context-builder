@@ -77,9 +77,18 @@ class TranscriptsSource(BaseModel):
     """Recordings stored in the logged-in user's own OneDrive (meetings they organised)."""
     include_shared: bool = True
     """Recordings other people's OneDrives have shared directly with the user."""
+    include_invited: bool = True
+    """Every meeting the user was invited to, wherever it was recorded: other
+    people's OneDrives (Teams only grants those to invited participants), Teams
+    team sites, and any SharePoint site where the user is a contributor
+    (including the ``sharepoint_source`` project site). SharePoint Search is
+    security-trimmed, so only recordings the user can open are ever seen."""
+    include_all_sites: bool = False
+    """Also include recordings on any *other* SharePoint site the user merely has
+    read access to (e.g. organisation-wide webinars, directorate sites). Can add
+    hundreds of meetings the user was not invited to, so it is off by default."""
     sites: list[str] = Field(default_factory=list)
-    """Extra SharePoint site URLs (e.g. Teams channel sites) whose meeting
-    recordings should be included."""
+    """Extra SharePoint site URLs whose meeting recordings are always included."""
     since_days: int | None = Field(default=None, ge=1)
     """Only include recordings modified in the last N days (default: all)."""
     exclude_titles: list[str] = Field(default_factory=list)

@@ -3,6 +3,23 @@
 All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.0]
+
+### Added
+- `include_invited` (default **on**) for Teams transcripts: pulls the
+  transcripts of *every* meeting you were invited to, not only ones you
+  organised or that were shared with you directly. It uses the security-trimmed
+  tenant-wide recording search and keeps recordings in other people's OneDrives,
+  Teams team sites (`/sites/msteams_*`) and sites where you are a contributor.
+- `include_all_sites` (default off) to also include read-only sites such as
+  organisation-wide webinars.
+
+### Fixed
+- Docs said `exclude_titles` matched substrings; it is a case-insensitive glob
+  (use `"*1:1*"`). Examples corrected.
+- A transient failure of the site-permission check aborts the run (and the
+  reconcile) rather than silently dropping meetings.
+
 ## [1.1.0]
 
 ### Added
