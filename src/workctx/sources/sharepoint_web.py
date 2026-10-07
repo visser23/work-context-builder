@@ -27,6 +27,7 @@ from workctx.auth.sharepoint import (
     SessionExpiredError,
     keepalive_and_extract,
     load_cookies,
+    relogin_hint,
 )
 from workctx.config import SharePointSource
 from workctx.models import (
@@ -107,7 +108,7 @@ class SharePointWebSource(Source):
 
         raise SessionExpiredError(
             f"No valid cookies for '{self.name}'. "
-            f"Run: uv run workctx auth login-sharepoint --source {self.name}"
+            f"Run: {relogin_hint(self.name)}"
         )
 
     def _test_cookies(self, cookies: dict[str, str]) -> bool:

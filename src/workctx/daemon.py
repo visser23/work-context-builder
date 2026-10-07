@@ -31,6 +31,21 @@ COOKIE_KEEPALIVE_HOURS = 4
 NOTIFICATION_DEDUP_HOURS = 6
 
 
+def _login_recovery_command(config_path: str, source_name: str) -> str:
+    """Return the best login command for Telegram recovery messages.
+
+    Prefers the ``workctx-relogin`` wrapper (works without cloud storage)
+    over the raw ``uv run`` command that requires the project directory.
+    """
+    wrapper = Path.home() / ".local" / "bin" / "workctx-relogin"
+    if wrapper.exists():
+        return f"workctx-relogin --source {source_name}"
+    return (
+        f"cd {Path(config_path).parent} && "
+        f"uv run workctx auth login-sharepoint --source {source_name}"
+    )
+
+
 class Daemon:
     """Main daemon loop for Work Context Mirror."""
 
@@ -156,7 +171,12 @@ class Daemon:
             if hours < COOKIE_KEEPALIVE_HOURS:
                 return
 
-        from workctx.auth.sharepoint import http_keepalive, load_cookie_blob
+        from workctx.auth.sharepoint import (
+            SessionExpiredError,
+            http_keepalive,
+            keepalive_and_extract,
+            load_cookie_blob,
+        )
 
         self._last_cookie_keepalive = now
 
@@ -175,16 +195,33 @@ class Daemon:
 
             if http_keepalive(site_url, cookies):
                 logger.debug("Cookie keepalive OK for %s", sp.name)
-            else:
-                project_dir = Path(self.config_path).parent
-                msg = (
-                    f"SharePoint session expired for '{sp.name}'.\n"
-                    f"Cookies expire periodically — re-login to capture fresh ones:\n"
-                    f"cd {project_dir} && uv run workctx auth login-sharepoint "
-                    f"--source {sp.name}"
-                )
-                logger.warning(msg)
-                self._notify(msg)
+                continue
+
+            # SharePoint invalidates sessions server-side after a few hours, but the
+            # browser profile can usually re-authenticate silently. Try that first;
+            # only bother the user if a human is genuinely needed.
+            logger.info(
+                "Stored cookies for %s rejected — attempting headless refresh", sp.name
+            )
+            try:
+                keepalive_and_extract(site_url, sp.name, secret_ref)
+                logger.info("Headless refresh recovered SharePoint session for %s", sp.name)
+                continue
+            except SessionExpiredError as e:
+                reason = str(e).splitlines()[0]
+            except Exception as e:
+                logger.warning("Headless refresh crashed for %s: %s", sp.name, e, exc_info=True)
+                reason = f"refresh error: {e}"
+
+            login_cmd = _login_recovery_command(self.config_path, sp.name)
+            msg = (
+                f"SharePoint session expired for '{sp.name}'.\n"
+                f"Automatic refresh failed ({reason}).\n"
+                f"Re-login to capture fresh cookies:\n"
+                f"{login_cmd}"
+            )
+            logger.warning(msg)
+            self._notify(msg)
 
     def _do_sync(self, *, full: bool = False, source: str = "schedule") -> str:
         """Execute a sync and return a result summary."""

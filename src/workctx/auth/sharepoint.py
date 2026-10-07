@@ -2,10 +2,12 @@
 
 Supports two flows:
 1. Interactive login: opens a visible browser, user authenticates, cookies extracted.
-2. Headless keepalive: opens browser with persisted profile, navigates to SP site,
-   attempts to extract fresh rtFa/FedAuth. Only works if SSO can complete without
-   user interaction (e.g. PRT/Kerberos). Falls back to manual re-login if the
-   identity provider requires interactive auth (common with ADFS/Entra ID).
+2. Headless keepalive: opens browser with persisted profile, navigates to SP site
+   and WAITS (up to SSO_WAIT_SECONDS) for the silent SSO redirect chain to hand
+   back fresh rtFa/FedAuth cookies that pass an HTTP check. SharePoint expires
+   sessions server-side after a few hours even though the profile's cookies look
+   alive; the identity provider's long-lived cookie re-issues them silently.
+   Falls back to manual re-login only if genuine interaction (password/MFA) is needed.
 """
 
 from __future__ import annotations
@@ -13,9 +15,11 @@ from __future__ import annotations
 import json
 import logging
 import platform
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 from workctx.secrets import get_secret, set_secret
 
@@ -31,6 +35,12 @@ _CHROMIUM_UA = (
 )
 
 SP_COOKIE_NAMES = {"rtFa", "FedAuth"}
+
+# How long a headless refresh waits for the silent SSO redirect chain
+# (SharePoint -> login.microsoftonline.com -> SharePoint) to hand back fresh cookies.
+SSO_WAIT_SECONDS = 45.0
+
+_BROWSER_LOCK = threading.Lock()
 
 
 def _profiles_dir() -> Path:
@@ -76,6 +86,7 @@ def interactive_login(
 
     profile_dir = get_profile_dir(source_name)
     cookies: dict[str, str] = {}
+    last_url = ""
 
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
@@ -87,38 +98,33 @@ def interactive_login(
             args=["--disable-blink-features=AutomationControlled"],
         )
 
-        page = context.new_page()
-        page.goto(site_url, wait_until="networkidle", timeout=120_000)
+        try:
+            page = context.new_page()
+            try:
+                page.goto(site_url, wait_until="networkidle", timeout=120_000)
+            except Exception:
+                logger.debug("Initial navigation did not go idle — polling anyway")
 
-        logger.info("Browser opened at %s — polling for auth cookies", site_url)
-        print(
-            "\n  Authenticate in the browser window. "
-            "Cookies will be captured automatically...\n"
-        )
+            logger.info("Browser opened at %s — polling for auth cookies", site_url)
+            print(
+                "\n  Authenticate in the browser window if prompted. "
+                "Cookies will be captured automatically...\n"
+            )
 
-        deadline = time.monotonic() + timeout_seconds
-        while time.monotonic() < deadline:
-            cookies = _extract_sp_cookies(context, site_url)
-            if "rtFa" in cookies and "FedAuth" in cookies:
-                logger.info("Authentication cookies detected")
-                break
-
-            final_url = page.url.lower()
-            if not _is_login_redirect(final_url) and ".sharepoint.com" in final_url:
-                cookies = _extract_sp_cookies(context, site_url)
-                if cookies:
-                    break
-
-            time.sleep(poll_interval)
-
-        if not cookies or "rtFa" not in cookies:
-            cookies = _extract_sp_cookies(context, site_url)
-
-        context.close()
+            cookies, last_url = _wait_for_valid_cookies(
+                context,
+                page,
+                site_url,
+                wait_seconds=timeout_seconds,
+                poll_interval=poll_interval,
+            )
+        finally:
+            context.close()
 
     if not cookies:
         raise RuntimeError(
-            "No SharePoint session cookies found after login. "
+            "No valid SharePoint session cookies found after login "
+            f"(last page: {_safe_url(last_url)}). "
             "Ensure you completed authentication."
         )
 
@@ -133,18 +139,23 @@ def keepalive_and_extract(
     secret_ref: str,
     *,
     timeout_ms: int = 60_000,
+    sso_wait_seconds: float = SSO_WAIT_SECONDS,
+    poll_interval: float = 1.0,
 ) -> dict[str, str]:
     """Open headless browser with persisted profile to refresh session cookies.
 
-    Uses the persistent profile from the last interactive login. Navigates
-    to the SP site with ``domcontentloaded`` (not ``networkidle`` — SharePoint
-    fires endless background requests that make ``networkidle`` unreliable).
+    The browser profile keeps *persistent* rtFa/FedAuth cookies (days of life)
+    and a long-lived identity-provider cookie, but SharePoint invalidates the
+    session server-side after a few hours. When that happens SharePoint
+    bounces the browser to the login page, which silently re-authenticates
+    (Entra ``ESTSAUTHPERSISTENT``) and redirects back with *new* cookies a few
+    seconds later. This function therefore does NOT trust the first cookies or
+    the first URL it sees: it polls for up to ``sso_wait_seconds`` until
+    cookies that pass an HTTP check against the SharePoint REST API appear.
 
-    Only persists cookies to the credential store if they pass an HTTP
-    validation check against the SharePoint REST API. This prevents stale
-    cookies from the browser profile overwriting the keychain when the
-    identity provider (e.g. ADFS/Entra ID) requires interactive auth that
-    a headless browser cannot complete.
+    Only cookies that pass that check are persisted, so stale profile cookies
+    can never overwrite good credentials. Raises ``SessionExpiredError`` if the
+    identity provider needs genuine interaction (password/MFA prompt).
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -158,12 +169,15 @@ def keepalive_and_extract(
     if not (profile_dir / "Default").exists() and not any(profile_dir.iterdir()):
         raise SessionExpiredError(
             f"No browser profile found for '{source_name}'. "
-            f"Run: uv run workctx auth login-sharepoint --source {source_name}"
+            f"Run: {relogin_hint(source_name)}"
         )
 
+    started = time.monotonic()
     cookies: dict[str, str] = {}
+    last_url = ""
 
-    with sync_playwright() as p:
+    # One browser per profile at a time (daemon keepalive vs. sync vs. Telegram /sync).
+    with _BROWSER_LOCK, sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
             user_data_dir=str(profile_dir),
             headless=True,
@@ -172,53 +186,108 @@ def keepalive_and_extract(
             accept_downloads=False,
             args=["--disable-blink-features=AutomationControlled"],
         )
-
-        page = context.new_page()
-
         try:
-            page.goto(site_url, wait_until="domcontentloaded", timeout=timeout_ms)
-        except Exception:
-            logger.debug(
-                "Navigation timeout for %s — extracting cookies anyway",
-                source_name,
+            page = context.new_page()
+            try:
+                page.goto(site_url, wait_until="domcontentloaded", timeout=timeout_ms)
+            except Exception:
+                logger.debug("Navigation timeout for %s — polling anyway", source_name)
+
+            cookies, last_url = _wait_for_valid_cookies(
+                context,
+                page,
+                site_url,
+                wait_seconds=sso_wait_seconds,
+                poll_interval=poll_interval,
             )
-
-        cookies = _extract_sp_cookies(context, site_url)
-
-        if not cookies:
-            final_url = page.url.lower()
-            if _is_login_redirect(final_url):
-                context.close()
-                raise SessionExpiredError(
-                    f"Session expired — redirected to login for '{source_name}'. "
-                    f"Run: uv run workctx auth login-sharepoint --source {source_name}"
-                )
-
-        context.close()
+        finally:
+            context.close()
 
     if not cookies:
-        raise SessionExpiredError(
-            f"No session cookies after keep-alive for '{source_name}'. "
-            f"Run: uv run workctx auth login-sharepoint --source {source_name}"
-        )
-
-    # Validate before persisting — headless SSO may have failed silently,
-    # leaving stale cookies from the browser profile.
-    if not _http_test_cookies(site_url, cookies):
         logger.info(
-            "Keepalive extracted cookies for %s but they failed HTTP validation "
-            "(headless SSO likely cannot complete for this identity provider)",
+            "Headless refresh for %s found no valid cookies after %.0fs (last page: %s)",
             source_name,
+            time.monotonic() - started,
+            _safe_url(last_url),
         )
         raise SessionExpiredError(
-            f"Session cookies expired for '{source_name}' and automatic refresh "
-            f"could not re-authenticate (SSO requires interactive login).\n"
-            f"Run: uv run workctx auth login-sharepoint --source {source_name}"
+            f"Session expired for '{source_name}': the identity provider needs "
+            f"interactive login (stuck at {_safe_url(last_url)} after "
+            f"{sso_wait_seconds:.0f}s).\n"
+            f"Run: {relogin_hint(source_name)}"
         )
 
     _persist_cookies(secret_ref, cookies, site_url)
-    logger.info("SharePoint cookies refreshed for %s", source_name)
+    logger.info(
+        "SharePoint cookies refreshed for %s in %.1fs",
+        source_name,
+        time.monotonic() - started,
+    )
     return cookies
+
+
+def _wait_for_valid_cookies(
+    context: BrowserContext,
+    page: Any,
+    site_url: str,
+    *,
+    wait_seconds: float,
+    poll_interval: float,
+) -> tuple[dict[str, str], str]:
+    """Poll the browser until rtFa/FedAuth cookies that SharePoint accepts appear.
+
+    Each distinct cookie pair is HTTP-tested once (stale profile cookies are
+    rejected immediately and not re-tested every poll). Returns
+    ``(cookies, last_url)``; ``cookies`` is empty if nothing valid appeared
+    before the deadline.
+    """
+    deadline = time.monotonic() + wait_seconds
+    tested: dict[str, str] | None = None
+    last_url = ""
+
+    while True:
+        try:
+            last_url = page.url
+            candidate = _extract_sp_cookies(context, site_url)
+        except Exception as exc:  # browser/page closed by the user
+            logger.info("Browser closed while waiting for cookies: %s", exc)
+            return {}, last_url
+
+        if "rtFa" in candidate and "FedAuth" in candidate and candidate != tested:
+            tested = dict(candidate)
+            if _http_test_cookies(site_url, candidate):
+                logger.info("Valid SharePoint cookies detected")
+                return candidate, last_url
+            logger.info(
+                "Browser holds rtFa/FedAuth but SharePoint rejected them — "
+                "waiting for SSO to issue fresh ones (page: %s)",
+                _safe_url(last_url),
+            )
+
+        if time.monotonic() >= deadline:
+            return {}, last_url
+
+        try:
+            page.wait_for_timeout(int(poll_interval * 1000))
+        except Exception as exc:
+            logger.info("Browser closed while waiting for cookies: %s", exc)
+            return {}, last_url
+
+
+def _safe_url(url: str) -> str:
+    """Host + path only — login URLs carry tokens in the query string."""
+    if not url:
+        return "unknown"
+    parsed = urlparse(url)
+    return f"{parsed.hostname or 'unknown'}{parsed.path}"
+
+
+def relogin_hint(source_name: str) -> str:
+    """Best command for a human to run to re-authenticate ``source_name``."""
+    wrapper = Path.home() / ".local" / "bin" / "workctx-relogin"
+    if wrapper.exists():
+        return f"workctx-relogin --source {source_name}"
+    return f"uv run workctx auth login-sharepoint --config workctx.yaml --source {source_name}"
 
 
 def load_cookies(secret_ref: str) -> dict[str, str] | None:
