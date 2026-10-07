@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import errno
+import hashlib
 import io
 import json
 import logging
 import os
 import re
 import tempfile
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -21,6 +24,15 @@ from workctx.normalise.common import (
 from workctx.state import StateDB
 
 logger = logging.getLogger(__name__)
+
+MAX_TOTAL_PATH_CHARS = 380
+"""Maximum total filesystem path length for corpus files.
+
+Cloud storage providers (OneDrive, iCloud, Dropbox) enforce path length
+limits — OneDrive Business allows at most 400 characters.  We use 380
+to leave a safe margin for differences between the filesystem path and
+the provider's internal representation.
+"""
 
 
 def safe_join(root: Path, relative_path: str) -> Path:
@@ -37,6 +49,85 @@ def safe_join(root: Path, relative_path: str) -> Path:
         raise ValueError(f"Path escapes root: {relative_path}")
 
     return root / normed
+
+
+_MAX_DIR_COMPONENT = 40
+"""Maximum characters per directory component before truncation."""
+
+
+def clamp_output_path(output_root: Path, relative_path: str) -> str:
+    """Shorten *relative_path* if the full path would exceed cloud storage limits.
+
+    Cloud storage providers like OneDrive enforce a maximum total path
+    length (typically 400 chars).  When the limit is exceeded, this
+    function first truncates the **filename stem**, then shortens long
+    directory components if needed, and appends a short hash of the
+    original path to preserve uniqueness.
+
+    Returns *relative_path* unchanged if within limits.
+    """
+    full_path = str(output_root / relative_path)
+    if len(full_path) <= MAX_TOTAL_PATH_CHARS:
+        return relative_path
+
+    path_hash = hashlib.sha256(relative_path.encode()).hexdigest()[:8]
+    hash_suffix = f"_{path_hash}"
+
+    rel = Path(relative_path)
+    parts = list(rel.parts)
+    filename = parts[-1]
+    dir_parts = parts[:-1]
+
+    # Separate stem from all extensions (e.g., "report.docx.md" → "report", ".docx.md")
+    # Only peel off short extensions (<=10 chars) — a "dot" in a long name like
+    # "Item 2.3 - Long title" is NOT an extension boundary.
+    stem = filename
+    extensions = ""
+    while True:
+        base, ext = os.path.splitext(stem)
+        if ext and base and len(ext) <= 10:
+            extensions = ext + extensions
+            stem = base
+        else:
+            break
+
+    # Iteratively shorten long directory components until the path fits.
+    # Start with the default max and progressively shrink if needed.
+    root_len = len(str(output_root))
+    max_comp = _MAX_DIR_COMPONENT
+
+    while max_comp >= 15:
+        shortened_dirs = []
+        for d in dir_parts:
+            if len(d) > max_comp:
+                d_hash = hashlib.sha256(d.encode()).hexdigest()[:4]
+                shortened_dirs.append(f"{d[:max_comp - 5]}_{d_hash}")
+            else:
+                shortened_dirs.append(d)
+        dir_path = "/".join(shortened_dirs)
+
+        fixed = root_len + 1 + len(dir_path) + 1 + len(hash_suffix) + len(extensions)
+        stem_budget = MAX_TOTAL_PATH_CHARS - fixed
+        if stem_budget >= 10:
+            break
+        max_comp -= 5
+
+    if stem_budget < 10:
+        stem_budget = 10
+
+    truncated = stem[:stem_budget].rstrip(" .-_")
+    new_filename = f"{truncated}{hash_suffix}{extensions}"
+
+    new_path = f"{dir_path}/{new_filename}" if dir_path else new_filename
+
+    logger.info(
+        "Path clamped (%d→%d chars): …/%s → …/%s",
+        len(full_path),
+        len(str(output_root / new_path)),
+        filename[:60],
+        new_filename[:60],
+    )
+    return new_path
 
 
 def write_corpus_file(
@@ -63,6 +154,50 @@ def write_corpus_file(
         raise
 
     return target
+
+
+_TRANSIENT_WRITE_ERRNOS = frozenset(
+    {errno.EDEADLK, errno.EAGAIN, errno.ETIMEDOUT, errno.EBUSY}
+)
+"""errnos the OneDrive/iCloud File Provider raises transiently (e.g. while a file
+is being materialised or synced); safe to retry."""
+
+
+def write_text_atomic(
+    path: Path,
+    text: str,
+    *,
+    attempts: int = 5,
+    retry_delay: float = 2.0,
+) -> None:
+    """Write ``text`` to ``path`` via temp file + replace, retrying transient errors.
+
+    Cloud-storage File Providers intermittently fail with EDEADLK/ETIMEDOUT
+    ("os error 60"). A fresh temp file in the same directory plus an atomic
+    rename avoids opening the (possibly dataless) target for writing, and the
+    retry loop rides out short provider hiccups. Permanent errors are raised
+    immediately.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for attempt in range(1, attempts + 1):
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent), prefix=".workctx_", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.replace(tmp_path, str(path))
+            return
+        except OSError as exc:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            if exc.errno not in _TRANSIENT_WRITE_ERRNOS or attempt == attempts:
+                raise
+            logger.warning(
+                "Transient write error on %s (attempt %d/%d): %s — retrying",
+                path.name, attempt, attempts, exc,
+            )
+            time.sleep(retry_delay * attempt)
 
 
 def remove_corpus_file(output_root: Path, relative_path: str) -> None:
@@ -116,28 +251,29 @@ def build_output_path(
 def generate_manifest(db: StateDB, output_root: Path) -> None:
     """Generate _meta/manifest.jsonl from the state database."""
     manifest_path = output_root / "_meta" / "manifest.jsonl"
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        cursor = db.conn.execute(
-            "SELECT * FROM source_objects "
-            "WHERE output_path IS NOT NULL "
-            "ORDER BY source_name, source_id"
+    cursor = db.conn.execute(
+        "SELECT * FROM source_objects "
+        "WHERE output_path IS NOT NULL "
+        "ORDER BY source_name, source_id"
+    )
+    lines: list[str] = []
+    for row in cursor:
+        entry = ManifestEntry(
+            source_type=row["source_type"],
+            source_name=row["source_name"],
+            source_id=row["source_id"],
+            source_key=row["source_key"],
+            output_path=row["output_path"],
+            title=row["title"],
+            source_url=row["source_url"],
+            updated_at=_parse_dt(row["source_updated_at"]),
+            synced_at=_parse_dt(row["last_processed_at"]),
+            content_sha256=row["content_sha256"],
         )
-        for row in cursor:
-            entry = ManifestEntry(
-                source_type=row["source_type"],
-                source_name=row["source_name"],
-                source_id=row["source_id"],
-                source_key=row["source_key"],
-                output_path=row["output_path"],
-                title=row["title"],
-                source_url=row["source_url"],
-                updated_at=_parse_dt(row["source_updated_at"]),
-                synced_at=_parse_dt(row["last_processed_at"]),
-                content_sha256=row["content_sha256"],
-            )
-            f.write(entry.model_dump_json() + "\n")
+        lines.append(entry.model_dump_json() + "\n")
+
+    write_text_atomic(manifest_path, "".join(lines))
 
 
 def generate_health(db: StateDB, output_root: Path, run_status: str) -> None:
@@ -159,7 +295,7 @@ def generate_health(db: StateDB, output_root: Path, run_status: str) -> None:
         "sources": sources_health,
     }
 
-    health_path.write_text(json.dumps(health, indent=2) + "\n")
+    write_text_atomic(health_path, json.dumps(health, indent=2) + "\n")
 
 
 def generate_index_md(config: ProjectConfig, db: StateDB, output_root: Path) -> None:
@@ -203,7 +339,7 @@ def generate_index_md(config: ProjectConfig, db: StateDB, output_root: Path) -> 
         lines.append(f"- Files: {count:,}")
         lines.append("")
 
-    index_path.write_text("\n".join(lines))
+    write_text_atomic(index_path, "\n".join(lines))
 
 
 def generate_context_md(config: ProjectConfig, output_root: Path) -> None:

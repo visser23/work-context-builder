@@ -315,14 +315,23 @@ uv run workctx auth login-sharepoint --source team-sharepoint
 A browser window opens. Log in as normal. Once you're in, the tool
 captures the session cookies automatically.
 
-> **Cookie expiry:** SharePoint session cookies typically expire after
-> 12–24 hours (controlled by your organisation's identity provider, not
-> by this tool). The daemon checks cookie validity every 4 hours and will
-> send you a Telegram notification with the exact re-login command when
-> they expire. Being logged into SharePoint in your normal browser does
-> **not** mean the tool's cookies are still valid — they are separate
-> sessions. The daemon attempts automatic refresh via headless browser,
-> but this only works if your SSO provider allows non-interactive auth.
+> **Cookie expiry & automatic refresh:** SharePoint invalidates its session
+> cookies (`rtFa`/`FedAuth`) on the server after a few hours, even though the
+> copies in the browser profile still look alive for days. The tool's login
+> profile (see `~/Library/Application Support/WorkContextMirror/browser-profiles/`)
+> keeps a long-lived identity-provider cookie (Entra `ESTSAUTHPERSISTENT`, ~90 days),
+> which lets a **headless browser silently re-authenticate** in a few seconds.
+>
+> - Before every sync, and every 4 hours in the daemon, stored cookies are
+>   tested against SharePoint. If rejected, the headless refresh runs and waits
+>   up to 45 s for the silent SSO redirect to hand back fresh cookies. Only
+>   cookies that pass an HTTP check are saved.
+> - You only get a Telegram alert (*"SharePoint session expired … Automatic
+>   refresh failed"*) when the identity provider genuinely needs you — a
+>   password/MFA prompt, or the ~90-day login cookie lapsing. Then run the
+>   `workctx-relogin` command from the message.
+> - `workctx-relogin` also validates what it captures; it will not store cookies
+>   SharePoint rejects.
 
 > **Where do I find `site_url` and `server_relative_path`?**
 > - Go to the SharePoint document library in your browser
@@ -452,6 +461,21 @@ uv run workctx service-status     # is it running?
 uv run workctx remove-service     # stop and uninstall
 uv run workctx daemon             # run in foreground for debugging
 ```
+
+### Cloud Storage Projects (OneDrive, iCloud, Dropbox)
+
+When the project lives on cloud-synced storage, `install-service` automatically:
+
+1. **Builds a self-contained local venv** — source code is copied (not linked), so
+   the daemon runs independently of the cloud filesystem
+2. **Caches the config locally** — no cloud dependency at runtime
+3. **Creates `workctx-relogin`** at `~/.local/bin/` — a wrapper script for
+   SharePoint re-authentication that works even when OneDrive is down
+4. **Clamps output paths** to 380 characters — prevents long SharePoint paths from
+   crashing OneDrive (which enforces a 400-char path limit)
+
+If you update the source code, re-run `uv run workctx install-service` to
+refresh the local install.
 
 ---
 
@@ -635,10 +659,13 @@ to each source, and reports exactly what's wrong.
 | `Config file not found` | Rename your config to `workctx.yaml`, or pass `--config path/to/config.yaml` |
 | `Multiple YAML configs found` | Rename yours to `workctx.yaml` (auto-detected by convention) or use `--config` |
 | `401 Unauthorized` on Confluence/Jira | Your token expired or is wrong. Generate a new one and `uv run workctx auth set <ref>` |
-| `SharePoint session expired` | Run `uv run workctx auth login-sharepoint --source <name>` again |
+| `SharePoint session expired` | The automatic headless refresh already failed, so a human step is needed (password/MFA, or the ~90-day login lapsed). Run `workctx-relogin --source <name>` (works even if OneDrive is down). Falls back to `uv run workctx auth login-sharepoint --config workctx.yaml --source <name>`. Look for `Headless refresh for … found no valid cookies (last page: …)` in `logs/daemon-stderr.log` to see where SSO got stuck |
+| `Sync failed with unhandled exception` + `Resource deadlock avoided` / `os error 60` while writing `_meta/*` | OneDrive File Provider hiccup. Metadata writes now retry automatically; a run-level failure is reported as FAILED (and alerted) rather than "healthy" |
 | `Playwright not installed` | Run `uv sync --extra playwright && uv run playwright install chromium` |
 | `Lock file stale` | Another sync crashed. Delete `run.lock` from the state directory |
 | `Daemon not running` | Run `uv run workctx service-status`, then `uv run workctx install-service` to reinstall |
+| `Operation timed out (os error 60)` | OneDrive/cloud storage isn't serving files. Restart the OneDrive app. Use `workctx-relogin` (which bypasses OneDrive) instead of `uv run` |
+| OneDrive crashes repeatedly | Long output paths (>400 chars) crash OneDrive. Run `uv run workctx install-service` to rebuild with path clamping, then sync |
 | First sync is slow | Normal — it downloads everything. Check progress bars for ETA. Subsequent syncs are fast. |
 | `No results` from search | Run `uv run workctx reindex` to rebuild the search index |
 | Telegram spam on failures | Upgrade — the daemon now deduplicates notifications (same failure won't re-notify for 6h) |
@@ -677,7 +704,7 @@ You can override this with `state_dir` in your config.
 
 ```bash
 uv sync --extra dev
-uv run pytest                    # 198 tests
+uv run pytest                    # 234 tests
 uv run ruff check src/ tests/   # lint
 uv run ruff format src/ tests/  # format
 ```

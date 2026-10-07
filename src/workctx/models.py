@@ -160,6 +160,10 @@ class SyncResult(BaseModel):
     source_results: list[SourceResult] = Field(default_factory=list)
 
     def aggregate_status(self) -> RunStatus:
+        # A run-level failure (lock error, unhandled exception while writing
+        # corpus metadata, ...) must never be masked by healthy per-source results.
+        if self.status == RunStatus.FAILED:
+            return RunStatus.FAILED
         if any(r.status == RunStatus.FAILED for r in self.source_results):
             return RunStatus.FAILED
         if any(r.status == RunStatus.DEGRADED for r in self.source_results):

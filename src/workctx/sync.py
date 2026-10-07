@@ -12,7 +12,9 @@ from pathlib import Path
 
 from workctx.config import ProjectConfig
 from workctx.corpus import (
+    MAX_TOTAL_PATH_CHARS,
     build_output_path,
+    clamp_output_path,
     generate_agents_md,
     generate_chatgpt_instructions,
     generate_claude_md,
@@ -51,6 +53,46 @@ _HEAVY_CONVERSION_SEMAPHORE = threading.Semaphore(_HEAVY_CONVERSION_LIMIT)
 _DB_WRITE_LOCK = threading.Lock()
 
 
+def _migrate_long_paths(db: StateDB, idx: SearchIndex, output_root: Path) -> int:
+    """Detect and migrate corpus files whose paths exceed cloud storage limits.
+
+    Renames the physical file, updates the state database, and refreshes
+    the search index.  Returns the number of files migrated.
+    """
+    cursor = db.conn.execute(
+        "SELECT source_name, source_id, output_path "
+        "FROM source_objects WHERE output_path IS NOT NULL"
+    )
+    rows = cursor.fetchall()
+    migrated = 0
+
+    for row in rows:
+        old_path: str = row["output_path"]
+        full = str(output_root / old_path)
+        if len(full) <= MAX_TOTAL_PATH_CHARS:
+            continue
+
+        new_path = clamp_output_path(output_root, old_path)
+        old_file = output_root / old_path
+        new_file = output_root / new_path
+
+        if old_file.exists():
+            new_file.parent.mkdir(parents=True, exist_ok=True)
+            old_file.rename(new_file)
+            logger.info("Migrated: %s → %s", old_path[-80:], new_path[-80:])
+
+        idx.remove(old_path)
+        db.conn.execute(
+            "UPDATE source_objects SET output_path = ? "
+            "WHERE source_name = ? AND source_id = ?",
+            (new_path, row["source_name"], row["source_id"]),
+        )
+        db.conn.commit()
+        migrated += 1
+
+    return migrated
+
+
 def run_sync(
     config: ProjectConfig,
     *,
@@ -85,6 +127,13 @@ def run_sync(
         idx = SearchIndex(config.state_dir / "state.sqlite")
         output_root = config.output_root_path
         output_root.mkdir(parents=True, exist_ok=True)
+
+        migrated = _migrate_long_paths(db, idx, output_root)
+        if migrated:
+            logger.info(
+                "Migrated %d files exceeding %d-char path limit",
+                migrated, MAX_TOTAL_PATH_CHARS,
+            )
 
         sources = _build_sources(config)
 
@@ -462,6 +511,7 @@ def _write_and_index(
                 change.source_id if source.source_type in file_source_types else None
             ),
         )
+        output_path = clamp_output_path(output_root, output_path)
 
         now = datetime.now(UTC)
         fm = FrontMatter(

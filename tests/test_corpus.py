@@ -2,14 +2,17 @@
 
 import csv
 import io
+from pathlib import Path
 
 import pytest
 
 from workctx.corpus import (
+    MAX_TOTAL_PATH_CHARS,
     _clean_sprint,
     _extract_jira_details,
     _md_escape,
     build_output_path,
+    clamp_output_path,
     generate_agents_md,
     generate_chatgpt_instructions,
     generate_claude_md,
@@ -347,3 +350,86 @@ class TestGenerateProjectBrief:
         assert "My Project" in content
         assert "126" in content  # 42 * 3 sources
         assert "Upload this single file" in content
+
+
+class TestClampOutputPath:
+    """Path length clamping for cloud storage limits."""
+
+    def test_short_path_unchanged(self, corpus_dir):
+        rel = "sharepoint/src/report.docx.md"
+        assert clamp_output_path(corpus_dir, rel) == rel
+
+    def test_long_path_truncated(self, tmp_path):
+        root = tmp_path / ("x" * 100)
+        root.mkdir()
+        filename = "A" * 300 + ".docx.md"
+        rel = f"sharepoint/src/{filename}"
+        result = clamp_output_path(root, rel)
+        full = str(root / result)
+        assert len(full) <= MAX_TOTAL_PATH_CHARS
+        assert result.endswith(".docx.md")
+        assert "_" in result  # hash suffix present
+
+    def test_preserves_directory_structure(self, tmp_path):
+        root = tmp_path / ("x" * 80)
+        root.mkdir()
+        rel = "sharepoint/src/deep/nested/dir/" + "B" * 300 + ".pdf.md"
+        result = clamp_output_path(root, rel)
+        assert result.startswith("sharepoint/src/deep/nested/dir/")
+        assert result.endswith(".pdf.md")
+
+    def test_deterministic_hash(self, corpus_dir):
+        rel = "sharepoint/src/" + "C" * 400 + ".docx.md"
+        r1 = clamp_output_path(corpus_dir, rel)
+        r2 = clamp_output_path(corpus_dir, rel)
+        assert r1 == r2
+
+    def test_different_paths_different_hashes(self, corpus_dir):
+        rel1 = "sharepoint/src/" + "D" * 400 + ".docx.md"
+        rel2 = "sharepoint/src/" + "E" * 400 + ".docx.md"
+        r1 = clamp_output_path(corpus_dir, rel1)
+        r2 = clamp_output_path(corpus_dir, rel2)
+        assert r1 != r2
+
+    def test_minimum_stem_length(self, tmp_path):
+        root = Path("/a" * 185)  # Very long root path (~370 chars)
+        rel = "a/b.docx.md"
+        result = clamp_output_path(root, rel)
+        # Even with extreme root path, filename has readable prefix + hash
+        filename = result.split("/")[-1]
+        assert "_" in filename  # hash suffix present
+        assert filename.endswith(".docx.md")
+
+    def test_dot_in_filename_not_treated_as_extension(self, tmp_path):
+        """Filenames like 'Item 2.3 - Long title.docx.md' should not treat '.3 -...' as ext."""
+        root = tmp_path / "out"
+        root.mkdir()
+        rel = (
+            "sharepoint/src/" + "x" * 200 + "/dir/"
+            "Item 2.3 - HomeTest Integration with Other Diagnostics Programmes.docx.md"
+        )
+        result = clamp_output_path(root, rel)
+        full = str(root / result)
+        assert len(full) <= MAX_TOTAL_PATH_CHARS
+        assert result.endswith(".docx.md")
+
+    def test_realistic_onedrive_path(self):
+        root = Path(
+            "/Users/user/Library/CloudStorage/OneDrive-CompanyName/"
+            "NHS England/DDTX/Context"
+        )
+        rel = (
+            "sharepoint/nhs-sharepoint/sites/X26_Digital_Prevention_Service/"
+            "Shared Documents/DPSP Digital Diagnostics & Digital Therapeutics/"
+            "2. HealthStore/11. Regulation and Assurance/"
+            "DTAC artefacts for Health Store development (Health Store owned)/"
+            "C1 - Clinical Safety Artefacts/Guidance docs/"
+            "HTG718 - NICE HTG - Digital Technologies to deliver "
+            "Pulmonary Rehabilitation for adults with COPD "
+            "- EVA (downloaded 2026-06-24).pdf.md"
+        )
+        result = clamp_output_path(root, rel)
+        full = str(root / result)
+        assert len(full) <= MAX_TOTAL_PATH_CHARS
+        assert result.endswith(".pdf.md")
+        assert result.startswith("sharepoint/nhs-sharepoint/")
