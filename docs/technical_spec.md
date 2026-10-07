@@ -46,8 +46,37 @@ src/workctx/
     ├── base.py      # Abstract source protocol
     ├── confluence.py # Confluence Cloud/DC sync
     ├── jira.py      # Jira Cloud/DC sync
-    └── sharepoint.py # OneDrive local, Graph, rclone, Playwright modes
+    ├── sharepoint.py # OneDrive local mode
+    ├── sharepoint_web.py # SharePoint browser mode
+    ├── local_folder.py # Local directory scanner
+    └── teams_transcripts.py # Teams meeting transcripts (SharePoint media API)
 ```
+
+## Teams Transcripts
+
+- **Discovery**: SharePoint Search `/_api/search/query` with
+  `ProgId:Media.Meeting path:"<own OneDrive>"` (own),
+  `ProgId:Media.Meeting (SharedWithUsersOWSUSER:"<email>" OR …)` (shared) and
+  `path:"<site>"` for extra sites. Paged (500/page); `since_days` and
+  `exclude_titles` applied client-side. KQL values escaped (`'` → `''`).
+- **Item API**: `driveId = "b!" + urlsafe_b64(bytes_le(SiteId)+bytes_le(WebId)+bytes_le(ListId))`
+  (no padding); base `{SPWebUrl}/_api/v2.1/drives/{driveId}/items/{UniqueId}`,
+  falling back to `/_api/v2.1/drive/items/{uid}`.
+- **Transcript**: `…/media/transcripts` lists them; `…/{id}/streamContent?format=json`
+  (header `Accept: */*`) returns speaker-attributed entries; VTT is the fallback
+  (no speakers). `source_version` = transcript cTag.
+- **Auth**: session cookies per host (`<tenant>.sharepoint.com`, secret `<ref>`;
+  `<tenant>-my.sharepoint.com`, secret `<ref>-my`). The `-my` cookies are
+  obtained by headless silent SSO on the existing Playwright profile.
+  Cookies are only sent to those two hosts (https, port 443, no userinfo).
+- **Incremental**: every recording is probed each run; unchanged items older
+  than 14 days are skipped by last-modified; recent and previously failed items
+  are rechecked. `get_current_ids` raises on any enumeration error so
+  reconciliation never deletes on a partial set.
+- **Errors**: 401/3xx → session expired; 400/403/404/410/423 → recording
+  inaccessible, skipped; 429/503/504 → retry honouring `Retry-After` (≤30s).
+- **Output**: `build_output_path(TRANSCRIPT, …, occurred_on=)` →
+  `transcripts/<source>/<YYYY|undated>/<YYYY-MM-DD>-<slug>-<id8>.md`.
 
 ## Data Flow
 

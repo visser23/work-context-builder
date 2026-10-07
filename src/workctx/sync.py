@@ -100,8 +100,13 @@ def run_sync(
     dry_run: bool = False,
     full: bool = False,
     quiet: bool = False,
+    only_sources: frozenset[str] | None = None,
 ) -> SyncResult:
-    """Execute a full sync across all configured sources."""
+    """Execute a full sync across all configured sources.
+
+    ``only_sources`` restricts the run to the named sources (the rest are left
+    untouched, including their checkpoints).
+    """
 
     result = SyncResult(
         run_id=run_id,
@@ -136,6 +141,14 @@ def run_sync(
             )
 
         sources = _build_sources(config)
+        if only_sources is not None:
+            unknown = only_sources - {s.name for s in sources}
+            if unknown:
+                raise ValueError(f"Unknown source(s): {', '.join(sorted(unknown))}")
+            for skipped in [s for s in sources if s.name not in only_sources]:
+                with contextlib.suppress(Exception):
+                    skipped.close()
+            sources = [s for s in sources if s.name in only_sources]
 
         if not sources:
             logger.warning("No sources configured — nothing to sync")
@@ -226,6 +239,7 @@ def _build_sources(config: ProjectConfig) -> list[Source]:
     from workctx.sources.local_folder import LocalFolderAdapter
     from workctx.sources.sharepoint import SharePointLocalSource
     from workctx.sources.sharepoint_web import SharePointWebSource
+    from workctx.sources.teams_transcripts import TeamsTranscriptSource
 
     sources: list[Source] = []
     overlap = config.sync.overlap_minutes
@@ -249,6 +263,14 @@ def _build_sources(config: ProjectConfig) -> list[Source]:
                 lf_config,
                 state_dir=config.state_dir,
                 output_root=config.output_root_path,
+            )
+        )
+
+    sp_by_name = {sp.name: sp for sp in config.sources.sharepoint}
+    for tx_config in config.sources.transcripts:
+        sources.append(
+            TeamsTranscriptSource(
+                tx_config, sharepoint_sources=sp_by_name, max_workers=max_workers
             )
         )
 
@@ -510,11 +532,20 @@ def _write_and_index(
             relative_source_path=(
                 change.source_id if source.source_type in file_source_types else None
             ),
+            occurred_on=change.metadata.get("meeting_date"),
         )
         output_path = clamp_output_path(output_root, output_path)
 
         now = datetime.now(UTC)
+        # Adapters may contribute extra provenance fields (e.g. meeting_date,
+        # participants) via metadata["front_matter"]; unknown keys are ignored.
+        extra_fm = {
+            k: v
+            for k, v in (change.metadata.get("front_matter") or {}).items()
+            if k in FrontMatter.model_fields and v is not None
+        }
         fm = FrontMatter(
+            **extra_fm,
             source_type=source.source_type.value,
             source_name=source.name,
             source_id=change.source_id,
@@ -567,7 +598,7 @@ def _write_and_index(
             idx.upsert(
                 output_path=part_path,
                 title=part_fm.title,
-                body=part_body[:50000],
+                body=part_body,
                 source_type=source.source_type.value,
                 source_name=source.name,
                 source_key=change.source_key or "",

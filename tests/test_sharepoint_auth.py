@@ -244,7 +244,7 @@ class TestDaemonTriesRefreshBeforeAlerting:
         config.project.id = "t"
         src = MagicMock()
         src.mode = "browser"
-        src.name = "nhs-sharepoint"
+        src.name = "my-sharepoint"
         src.auth.secret_ref = "ref"
         config.sources.sharepoint = [src]
         config.notifications.telegram.enabled = False

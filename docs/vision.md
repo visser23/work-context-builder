@@ -9,8 +9,8 @@ if it were an expert in that project.
 ## What It Is
 
 A lightweight macOS application that creates and continuously maintains a local,
-LLM-friendly mirror of selected work knowledge held across Confluence, Jira, and
-SharePoint/OneDrive.
+LLM-friendly mirror of selected work knowledge held across Confluence, Jira,
+SharePoint/OneDrive, and Teams meeting transcripts.
 
 ## What It Is Not
 

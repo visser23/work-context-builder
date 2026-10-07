@@ -7,7 +7,10 @@
 │   Confluence     │   │      Jira        │   │  SharePoint / OneDrive   │
 │   (REST/CQL)     │   │   (REST/JQL)     │   │  (local filesystem)      │
 └────────┬─────────┘   └────────┬─────────┘   └────────────┬─────────────┘
-         │                      │                           │
+         │                      │       ┌──────────────────┴───────────┐
+         │                      │       │ Teams transcripts (SharePoint│
+         │                      │       │ Search + media API, cookies) │
+         │                      │       └──────────────────┬───────────┘
          └──────────────────────┼───────────────────────────┘
                                 │
                     ┌───────────▼───────────┐
@@ -106,7 +109,8 @@ src/workctx/
 │   ├── office.py ────────── MarkItDown: DOCX, PPTX, XLSX, CSV
 │   ├── pdf.py ───────────── PyMuPDF4LLM (primary), Docling (fallback)
 │   ├── html.py ──────────── HTML → Markdown
-│   └── atlassian.py ─────── Confluence storage XML → MD, Jira ADF → MD
+│   ├── atlassian.py ─────── Confluence storage XML → MD, Jira ADF → MD
+│   └── transcript.py ────── Teams transcript JSON/VTT → speaker turns MD
 │
 └── sources/
     ├── base.py ──────────── Source protocol (abstract interface)
@@ -114,7 +118,8 @@ src/workctx/
     ├── jira.py ──────────── Jira Cloud/DC adapter
     ├── sharepoint.py ────── SharePoint local (OneDrive) mode
     ├── sharepoint_web.py ── SharePoint browser mode (REST API)
-    └── local_folder.py ──── Local filesystem directory scanner
+    ├── local_folder.py ──── Local filesystem directory scanner
+    └── teams_transcripts.py  Teams meeting transcripts (search + v2.1 media API)
 ```
 
 ## Storage Layout
@@ -143,7 +148,8 @@ LLM Corpus (in OneDrive):
 │   └── manifest.jsonl
 ├── confluence/<source-name>/<space>/<id>-<slug>.md
 ├── jira/<source-name>/<project>/<ISSUE-KEY>.md
-└── sharepoint/<source-name>/<relative-path>.md
+├── sharepoint/<source-name>/<relative-path>.md
+└── transcripts/<source-name>/<year>/<date>-<title>-<id8>.md
 ```
 
 ## Sync Flow (per source)

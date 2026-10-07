@@ -66,7 +66,20 @@ def main() -> None:
 @click.option("--dry-run", is_flag=True, help="Show what would change without modifying anything")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
 @click.option("--full", is_flag=True, help="Force full sync (ignore checkpoints)")
-def sync(config: str | None, dry_run: bool, verbose: bool, full: bool) -> None:
+@click.option(
+    "--source",
+    "-s",
+    "only_sources",
+    multiple=True,
+    help="Only sync this source (repeatable). Default: all sources.",
+)
+def sync(
+    config: str | None,
+    dry_run: bool,
+    verbose: bool,
+    full: bool,
+    only_sources: tuple[str, ...],
+) -> None:
     """Run incremental synchronisation."""
     from workctx.config import load_config
     from workctx.logging_config import generate_run_id, setup_logging
@@ -82,7 +95,14 @@ def sync(config: str | None, dry_run: bool, verbose: bool, full: bool) -> None:
         console.print("[yellow]DRY RUN — no changes will be made[/yellow]")
     console.print()
 
-    result = run_sync(cfg, run_id=run_id, dry_run=dry_run, full=full)
+    only = frozenset(only_sources) or None
+    unknown = (only or frozenset()) - set(cfg.all_source_names())
+    if unknown:
+        console.print(f"[red]Unknown source(s): {', '.join(sorted(unknown))}[/red]")
+        console.print(f"Configured sources: {', '.join(cfg.all_source_names())}")
+        sys.exit(2)
+
+    result = run_sync(cfg, run_id=run_id, dry_run=dry_run, full=full, only_sources=only)
 
     if dry_run:
         for sr in result.source_results:
@@ -258,7 +278,13 @@ def auth_remove(secret_ref: str) -> None:
 
 @auth.command("login-sharepoint")
 @click.option("--config", "-c", type=str, default=None)
-@click.option("--source", "-s", type=str, required=True, help="SharePoint source name")
+@click.option(
+    "--source",
+    "-s",
+    type=str,
+    required=True,
+    help="SharePoint source name (or a standalone Teams transcripts source)",
+)
 @click.option("--headless", is_flag=True, help="Run headless (for testing)")
 def auth_login_sharepoint(config: str | None, source: str, headless: bool) -> None:
     """Open browser for SharePoint login and capture session cookies."""
@@ -266,30 +292,47 @@ def auth_login_sharepoint(config: str | None, source: str, headless: bool) -> No
     from workctx.config import load_config
 
     cfg = load_config(_find_config(config))
-    sp_config = None
+    site_url: str | None = None
+    secret_ref: str | None = None
+
     for sp in cfg.sources.sharepoint:
         if sp.name == source:
-            sp_config = sp
+            site_url = sp.site_url
+            secret_ref = sp.auth.secret_ref if sp.auth else None
             break
+    else:
+        for tx in cfg.sources.transcripts:
+            if tx.name != source:
+                continue
+            if tx.sharepoint_source:
+                console.print(
+                    f"[yellow]'{source}' reuses the login of SharePoint source "
+                    f"'{tx.sharepoint_source}'.[/yellow]\n"
+                    f"Run: workctx auth login-sharepoint --source {tx.sharepoint_source}"
+                )
+                sys.exit(1)
+            site_url = tx.site_url
+            secret_ref = tx.auth.secret_ref if tx.auth else None
+            break
+        else:
+            console.print(f"[red]SharePoint source '{source}' not found in config.[/red]")
+            sys.exit(1)
 
-    if not sp_config:
-        console.print(f"[red]SharePoint source '{source}' not found in config.[/red]")
-        sys.exit(1)
-    if not sp_config.site_url:
+    if not site_url:
         console.print(f"[red]site_url not configured for '{source}'.[/red]")
         sys.exit(1)
-    if not sp_config.auth or not sp_config.auth.secret_ref:
+    if not secret_ref:
         console.print(f"[red]auth.secret_ref not configured for '{source}'.[/red]")
         sys.exit(1)
 
-    console.print(f"Opening browser for [bold]{sp_config.site_url}[/bold]...")
+    console.print(f"Opening browser for [bold]{site_url}[/bold]...")
     console.print("Complete authentication in the browser window.")
 
     try:
         cookies = interactive_login(
-            sp_config.site_url,
+            site_url,
             source,
-            sp_config.auth.secret_ref,
+            secret_ref,
             headless=headless,
         )
         console.print(f"[green]Cookies captured: {', '.join(cookies.keys())}[/green]")

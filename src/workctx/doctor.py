@@ -163,6 +163,10 @@ def run_doctor(config_path: Path, *, verbose: bool = False) -> bool:
                     f"Run: uv run workctx auth set {conf.auth.secret_ref}"
                 )
 
+    for tx in config.sources.transcripts:
+        console.print(f"\n  Teams transcripts: {tx.name}")
+        _check_transcripts(config, tx, ok, fail, warn)
+
     console.print()
     console.print("[bold]Notifications[/bold]")
     if config.notifications.telegram.enabled:
@@ -335,7 +339,8 @@ def _check_sharepoint_browser(sp_config, ok, fail, warn) -> None:
             warn(f"SharePoint connectivity check failed: {e}")
     else:
         warn(
-            f"No SharePoint cookies — run: uv run workctx auth login-sharepoint --source {sp_config.name}"
+            "No SharePoint cookies — run: "
+            f"uv run workctx auth login-sharepoint --source {sp_config.name}"
         )
 
     profile_dir = get_profile_dir(sp_config.name)
@@ -343,3 +348,49 @@ def _check_sharepoint_browser(sp_config, ok, fail, warn) -> None:
         ok(f"Browser profile exists: {profile_dir}")
     else:
         warn(f"No browser profile yet: {profile_dir}")
+
+
+def _check_transcripts(config, tx_config, ok, fail, warn) -> None:
+    """Test Teams-transcripts connectivity: both SharePoint hosts, search and a sample."""
+    from workctx.auth.sharepoint import SessionExpiredError
+    from workctx.sources.teams_transcripts import TeamsTranscriptSource
+
+    source = TeamsTranscriptSource(
+        tx_config,
+        sharepoint_sources={sp.name: sp for sp in config.sources.sharepoint},
+    )
+    issues = source.validate()
+    if issues:
+        for issue in issues:
+            fail(issue)
+        return
+    ok(f"Login reused from: {tx_config.sharepoint_source or 'standalone cookies'}")
+    ok(
+        "Scope: "
+        + ", ".join(
+            part
+            for part, enabled in (
+                ("own OneDrive", tx_config.include_own),
+                ("shared with me", tx_config.include_shared),
+                (f"{len(tx_config.sites)} extra site(s)", bool(tx_config.sites)),
+            )
+            if enabled
+        )
+    )
+    try:
+        hits = source._collect_hits()
+        ok(f"Found {len(hits)} Teams recording(s) visible to you")
+        if not hits:
+            warn("No recordings found — are meetings recorded/transcribed in your tenant?")
+            return
+        for hit in hits[:5]:
+            if source._list_transcripts(hit):
+                ok("Transcript API works")
+                return
+        warn("None of the 5 most recent recordings has a transcript (is transcription enabled?)")
+    except SessionExpiredError as e:
+        fail(f"SharePoint session invalid: {str(e).splitlines()[0]}")
+    except Exception as e:
+        fail(f"Could not search for Teams recordings: {e}")
+    finally:
+        source.close()

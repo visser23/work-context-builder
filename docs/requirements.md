@@ -47,6 +47,20 @@
 - MarkItDown for Office docs, PyMuPDF4LLM for PDFs
 - Optional: Graph API, rclone, Playwright fallbacks
 
+### Teams Meeting Transcripts
+- Reuses a browser-mode SharePoint login — no app registration or admin consent
+- Discovers recordings (`Media.Meeting`) in the user's OneDrive and those shared
+  with the user; optional extra team sites
+- One meeting = one Markdown file in `transcripts/<source>/<year>/`
+- Speaker-attributed, timestamped turns; front matter has meeting date,
+  duration and participants
+- Late-arriving transcripts picked up (recent meetings rechecked every run)
+- Filters: `since_days`, `exclude_titles`, `include_own`, `include_shared`
+- `workctx sync --source <name>` syncs a single source
+- Long transcripts are fully searchable (index body cap 400k chars)
+- Inaccessible recordings (locked/leaver OneDrives) skipped quietly, never fatal
+- Never mass-deletes on a partial enumeration (reconcile aborts on errors)
+
 ## KPIs
 - Initial sync: complete and correct
 - Daily sync with no changes: seconds, near-zero API calls

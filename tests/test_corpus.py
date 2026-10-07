@@ -132,6 +132,35 @@ def test_build_output_path_sharepoint():
     assert path == "sharepoint/docs/Architecture/design.docx.md"
 
 
+class TestTranscriptOutputPath:
+    SID = "A7B2386D-C4B2-4EC1-B42A-0A4A4C194C6B"
+
+    @staticmethod
+    def _path(source_id, title, day):
+        return build_output_path(
+            SourceType.TRANSCRIPT, "teams", source_id, title=title, occurred_on=day
+        )
+
+    def test_dated_path(self):
+        path = self._path(self.SID, "Ada x Bob: Q&A!", "2026-06-25")
+        assert path == "transcripts/teams/2026/2026-06-25-ada-x-bob-qa-a7b2386d.md"
+
+    def test_same_title_same_day_does_not_collide(self):
+        other = "11111111-2222-3333-4444-555555555555"
+        assert self._path(self.SID, "Sync", "2026-01-02") != self._path(other, "Sync", "2026-01-02")
+
+    @pytest.mark.parametrize("bad", [None, "", "yesterday", "2026-1-2", "../../etc"])
+    def test_missing_or_invalid_date_goes_to_undated(self, bad):
+        path = self._path(self.SID, "Sync", bad)
+        assert path == "transcripts/teams/undated/sync-a7b2386d.md"
+
+    def test_untitled_and_hostile_titles_stay_inside_root(self):
+        path = self._path(self.SID, "../../../etc/passwd", "2026-01-02")
+        assert ".." not in path and path.startswith("transcripts/teams/2026/")
+        untitled = self._path(self.SID, "日本語", "2026-01-02")
+        assert untitled == "transcripts/teams/2026/2026-01-02-meeting-a7b2386d.md"
+
+
 # -- Jira summary tests --
 
 
@@ -416,15 +445,15 @@ class TestClampOutputPath:
     def test_realistic_onedrive_path(self):
         root = Path(
             "/Users/user/Library/CloudStorage/OneDrive-CompanyName/"
-            "NHS England/DDTX/Context"
+            "Example Org/Project/Context"
         )
         rel = (
-            "sharepoint/nhs-sharepoint/sites/X26_Digital_Prevention_Service/"
-            "Shared Documents/DPSP Digital Diagnostics & Digital Therapeutics/"
-            "2. HealthStore/11. Regulation and Assurance/"
-            "DTAC artefacts for Health Store development (Health Store owned)/"
+            "sharepoint/my-sharepoint/sites/Example_Site/"
+            "Shared Documents/Example Programme Library/"
+            "2. Product/11. Regulation and Assurance/"
+            "Assurance artefacts for product development/"
             "C1 - Clinical Safety Artefacts/Guidance docs/"
-            "HTG718 - NICE HTG - Digital Technologies to deliver "
+            "Guidance 718 - Digital Technologies to deliver "
             "Pulmonary Rehabilitation for adults with COPD "
             "- EVA (downloaded 2026-06-24).pdf.md"
         )
@@ -432,4 +461,4 @@ class TestClampOutputPath:
         full = str(root / result)
         assert len(full) <= MAX_TOTAL_PATH_CHARS
         assert result.endswith(".pdf.md")
-        assert result.startswith("sharepoint/nhs-sharepoint/")
+        assert result.startswith("sharepoint/my-sharepoint/")

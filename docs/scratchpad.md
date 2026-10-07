@@ -2,7 +2,8 @@
 
 ## Current Status
 - All core phases complete + LLM integration polish + external review hardening
-- 234 tests passing, 0 lint errors in touched files (pre-existing RUF005/E501 in scheduler.py/doctor.py)
+- 355 tests passing, 0 lint errors in touched files (pre-existing RUF005 in scheduler.py)
+- **v1.1.0: Teams meeting transcripts** source (`sources.transcripts`) — see CHANGELOG; dogfooded live (62 transcripts, ~12s, idempotent)
 - Background daemon with Telegram commands (launchd KeepAlive on macOS)
 - Cross-platform service management (launchd, systemd, Task Scheduler)
 - First-run bootstrap scripts for macOS/Linux and Windows
@@ -68,3 +69,12 @@
 - A failing `result.status` was masked because the daemon used `aggregate_status()` (per-source only). Check ALL status sources when a log says "failed" and "healthy" back to back.
 - OneDrive File Provider raises transient EDEADLK (errno 11) / ETIMEDOUT (60) on open-for-write of materialised files; use temp-file + `os.replace` with retry.
 - TODO (not done): `SharePointWebSource.get_current_ids` swallows per-folder non-200/exception and returns a PARTIAL id set; reconcile then deletes everything missing. Verified Oct 7 deletions were genuine (88/88 gone on server), but a throttled enumeration could mass-delete. Make it raise on any non-200/404 so reconciliation is skipped.
+- **Teams transcripts API discoveries (Oct 2026)** — the transcript lives on the recording mp4 (Media.Meeting), NOT in Graph. Reachable without an app registration via SharePoint cookies: search `ProgId:Media.Meeting` (`FileExtension:mp4` finds nothing), then v2.1 `…/media/transcripts/{id}/streamContent?format=json`. Needs `Accept: */*` (406 otherwise). driveId is derived from SiteId/WebId/ListId GUIDs (bytes_le, urlsafe b64, `b!` prefix).
+- OneDrive (`-my`) and team-site hosts need separate cookies; get the `-my` ones by headless silent SSO on the existing Playwright profile, validate with an HTTP check, store under `<ref>-my`.
+- HTTP 423 (resourceLocked) = blocked leaver OneDrive; treat with 400/403/404/410 as "inaccessible, skip quietly" — never fail the run.
+- Transcripts arrive minutes/hours after a meeting ends: recheck recent recordings every run, skip only old unchanged ones by lastmod.
+- Index body cap of 50k silently truncated long transcripts; test fixtures must be large enough to prove it (and fail on the old cap).
+- Cookie hygiene: `_host_root` must reject userinfo/ports/non-https or a crafted search hit could exfiltrate cookies. Drop foreign `SPWebUrl` hits.
+- Shared test fakes belong in `tests/fake_sharepoint.py` + `tests/conftest.py` (importing a fixture from another test module triggers ruff F811).
+- `uv run` on the OneDrive-hosted `.venv` can hang; use a local venv (`/tmp/wctx-dev`) for tests and `python -c "from workctx.cli import main; main()"` for live runs.
+- To roll the feature out to the background daemon: `uv run workctx install-service` (rebuilds the daemon venv + refreshes its config copy).

@@ -87,6 +87,23 @@ sources:
     #     secret_ref: "workctx/my-project/sp-cookies"
 
   # ──────────────────────────────────────────────────────────
+  # Teams meeting transcripts — reuses a browser-mode SharePoint login
+  # ──────────────────────────────────────────────────────────
+  # Pulls the transcripts of Teams meetings you recorded (or that were shared
+  # with you) into transcripts/<source>/<year>/. Requires a SharePoint source
+  # above with `auth.mode: browser` that you have logged in to
+  # (workctx auth login-sharepoint --source <name>).
+  # transcripts:
+  #   - name: "teams-transcripts"
+  #     sharepoint_source: "my-sharepoint"   # name of the browser-mode source
+  #     # include_own: true                  # recordings in your own OneDrive
+  #     # include_shared: true               # recordings shared with you
+  #     # sites:                             # extra team sites holding recordings
+  #     #   - "https://contoso.sharepoint.com/sites/MyTeam"
+  #     # since_days: 365                    # only meetings from the last N days
+  #     # exclude_titles: ["1:1"]            # skip meetings whose title contains these
+
+  # ──────────────────────────────────────────────────────────
   # Local folders — scan any directories on your filesystem
   # ──────────────────────────────────────────────────────────
   # local_folders:

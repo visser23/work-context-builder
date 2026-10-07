@@ -108,6 +108,19 @@
 - [x] Code review and quality improvements
 - [x] 151 tests passing, 0 lint errors
 
+## Phase 12: Teams Meeting Transcripts (v1.1.0)
+- [x] Discover feasible API: SharePoint Search + v2.1 `media/transcripts` with session cookies
+- [x] `TranscriptsSource` config + validation (must reference a browser-mode SharePoint source)
+- [x] Per-host cookies (`<tenant>` and `<tenant>-my`), silent SSO for the OneDrive host
+- [x] `TeamsTranscriptSource` (search, driveId derivation, JSON/VTT download, retries)
+- [x] Transcript normaliser (speaker merging, timestamps, front matter extras)
+- [x] Incremental sync, failure retry, safe reconcile
+- [x] `workctx sync --source`, `doctor` checks, generated LLM files mention transcripts
+- [x] Index body cap raised to 400k chars
+- [x] Security hardening (cookie host allow-list, KQL escaping, path sanitising)
+- [x] Offline tests (fake tenant) + live dogfood against a real tenant
+- [x] README, example config, CHANGELOG, version 1.1.0
+
 ## Documentation
 - [x] README.md (installation → first sync)
 - [x] Example configuration file
