@@ -167,6 +167,16 @@ def run_doctor(config_path: Path, *, verbose: bool = False) -> bool:
         console.print(f"\n  Teams transcripts: {tx.name}")
         _check_transcripts(config, tx, ok, fail, warn)
 
+    for mail in config.sources.mail:
+        console.print(f"\n  Email: {mail.name}")
+        _check_outlook(config, mail, "mail", ok, fail, warn)
+    for cal in config.sources.calendar:
+        console.print(f"\n  Calendar: {cal.name}")
+        _check_outlook(config, cal, "calendar", ok, fail, warn)
+    for slack in config.sources.slack:
+        console.print(f"\n  Slack: {slack.name}")
+        _check_slack(config, slack, ok, fail, warn)
+
     console.print()
     console.print("[bold]Notifications[/bold]")
     if config.notifications.telegram.enabled:
@@ -392,5 +402,60 @@ def _check_transcripts(config, tx_config, ok, fail, warn) -> None:
         fail(f"SharePoint session invalid: {str(e).splitlines()[0]}")
     except Exception as e:
         fail(f"Could not search for Teams recordings: {e}")
+    finally:
+        source.close()
+
+
+def _check_outlook(config, src_config, kind: str, ok, fail, warn) -> None:
+    """Test Outlook connectivity: browser session -> token -> a one-item API call."""
+    from workctx.auth.webtokens import WebSessionExpiredError
+    from workctx.sources.outlook import CalendarAdapter, MailAdapter
+
+    sp_by_name = {sp.name: sp for sp in config.sources.sharepoint}
+    cls = MailAdapter if kind == "mail" else CalendarAdapter
+    source = cls(src_config, sharepoint_sources=sp_by_name)
+    issues = source.validate()
+    if issues:
+        for issue in issues:
+            fail(issue)
+        return
+    ok(f"Browser profile: {src_config.profile_name(sp_by_name)}")
+    try:
+        client = source._require_client()
+        data = client.get_json("/me", {"$select": "EmailAddress,DisplayName"})
+        ok(f"Outlook session valid for {data.get('DisplayName') or 'this account'}")
+        if kind == "mail":
+            folders = source._folder_ids()
+            ok(f"Folders: {', '.join(name for _, name in folders)}")
+    except WebSessionExpiredError as e:
+        fail(f"Outlook session invalid: {e}")
+    except Exception as e:
+        fail(f"Outlook check failed: {e}")
+    finally:
+        source.close()
+
+
+def _check_slack(config, src_config, ok, fail, warn) -> None:
+    """Test Slack connectivity: browser session -> workspaces -> auth.test per workspace."""
+    from workctx.auth.webtokens import WebSessionExpiredError, select_slack_teams
+    from workctx.sources.slack import SlackAdapter
+
+    sp_by_name = {sp.name: sp for sp in config.sources.sharepoint}
+    source = SlackAdapter(src_config, sharepoint_sources=sp_by_name)
+    ok(f"Browser profile: {src_config.profile_name(sp_by_name)}")
+    try:
+        session = source._session_provider(False)
+        teams = select_slack_teams(session.teams, src_config.workspaces)
+        if not teams:
+            fail("Signed in, but no Slack workspace matched")
+            return
+        for team in teams:
+            client = source._client(team, session)
+            who = client.call("auth.test")
+            ok(f"Workspace '{team.name}' ({team.domain}): signed in as {who.get('user')}")
+    except WebSessionExpiredError as e:
+        fail(f"Slack session invalid: {e}")
+    except Exception as e:
+        fail(f"Slack check failed: {e}")
     finally:
         source.close()

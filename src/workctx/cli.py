@@ -276,6 +276,50 @@ def auth_remove(secret_ref: str) -> None:
     console.print(f"[green]Secret removed: {secret_ref}[/green]")
 
 
+@auth.command("login-web")
+@click.option("--config", "-c", type=str, default=None)
+@click.option(
+    "--source",
+    "-s",
+    type=str,
+    required=True,
+    help="Name of a mail, calendar or slack source",
+)
+def auth_login_web(config: str | None, source: str) -> None:
+    """Sign in to Outlook / Slack once in a visible browser (saved in the browser profile).
+
+    Usually unnecessary: a profile that already holds your single-sign-on session signs
+    in to Outlook and Slack silently. Run this when a source reports no session.
+    """
+    from workctx.auth.webtokens import interactive_web_login
+    from workctx.config import load_config
+
+    cfg = load_config(_find_config(config))
+    sp_by_name = {sp.name: sp for sp in cfg.sources.sharepoint}
+    for kind, group in (
+        ("outlook", cfg.sources.mail),
+        ("outlook", cfg.sources.calendar),
+        ("slack", cfg.sources.slack),
+    ):
+        for src in group:
+            if src.name != source:
+                continue
+            profile = src.profile_name(sp_by_name)
+            url = src.client_url if kind == "slack" else src.mailbox_url  # type: ignore[union-attr]
+            if kind == "slack":
+                url = getattr(src, "signin_url", None) or url
+            console.print(f"Opening a browser (profile [bold]{profile}[/bold]) at {url} ...")
+            console.print("Complete sign-in in the window; it closes automatically.")
+            sso_text = getattr(src, "sso_button_text", "Sign in with")
+            if interactive_web_login(profile, url, kind, sso_button_text=sso_text):
+                console.print(f"[green]Signed in. '{source}' can now sync.[/green]")
+                return
+            console.print("[red]Timed out before a usable session was detected.[/red]")
+            sys.exit(1)
+    console.print(f"[red]No mail/calendar/slack source named '{source}' in the config.[/red]")
+    sys.exit(1)
+
+
 @auth.command("login-sharepoint")
 @click.option("--config", "-c", type=str, default=None)
 @click.option(

@@ -49,8 +49,38 @@ src/workctx/
     ├── sharepoint.py # OneDrive local mode
     ├── sharepoint_web.py # SharePoint browser mode
     ├── local_folder.py # Local directory scanner
-    └── teams_transcripts.py # Teams meeting transcripts (SharePoint media API)
+    ├── teams_transcripts.py # Teams meeting transcripts (SharePoint media API)
+    ├── outlook.py   # Mail + calendar adapters, OutlookClient (Outlook REST v2.0)
+    └── slack.py     # Slack adapter + SlackClient (Web API, xoxc token + d cookie)
+auth/webtokens.py    # Reads Outlook MSAL / Slack tokens from the browser profile
+normalise/outlook.py # Mail/event Markdown, quoted-reply trimming
+normalise/slack.py   # Slack mrkdwn → Markdown, day digests, version fingerprints
 ```
+
+## Email, Calendar, Slack (v1.3.0)
+
+- **Auth**: `auth/webtokens.py` opens the persistent Playwright profile headless
+  (real Chrome UA; Slack rejects `HeadlessChrome`). Outlook: MSAL access tokens
+  (`https://outlook.office.com`, Mail.Read*/Calendars.Read*) from
+  local/sessionStorage. Slack: `localConfig_v2` (xoxc tokens per workspace) +
+  `d` cookie; signed-out → `signin_url` + click SSO button. Tokens cached in
+  memory (`_lock`), refreshed once on 401 / Slack auth errors; never persisted.
+- **Outlook**: `GET https://outlook.office.com/api/v2.0` — `/me/mailfolders/{f}/messages`
+  (`$filter ReceivedDateTime ge`), `/me/calendarview`, `/me/messages/{id}`,
+  `/me/events/{id}`; `Prefer: outlook.body-content-type="text", IdType="ImmutableId"`.
+  Mail version `r:<Received>` (immutable → skipped once synced); event version
+  `ck:<ChangeKey>`. 429/503/504 honour Retry-After (≤60s).
+- **Slack**: `users.conversations` → `conversations.history` (+`replies`) per
+  conversation from `max(window, last stored day − 1)`; messages grouped by UTC
+  day; `source_id=<team>:<channel>:<day>`; `source_version=<n>:<sha12>` of message
+  fingerprints (text, edit ts, replies, reactions, files). Enterprise org token
+  (`E…`) is skipped (`enterprise_is_restricted`); each workspace is read.
+- **Rolling windows**: `Source.retention_cutoff()` keeps objects last updated
+  before the window from reconcile; `Source.reconcile_supported()` False for Slack.
+- **Output**: `email|calendar/<source>/<YYYY>/<MM>/<date>-<slug>-<id8>.md`,
+  `slack/<source>/<workspace>/<conversation>-<id>/<YYYY-MM-DD>.md`.
+- **Security**: https + exact host check, no redirects, Slack host `*.slack.com`,
+  `repr` hides secrets, read-only verbs only (asserted in tests).
 
 ## Teams Transcripts
 

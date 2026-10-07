@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -42,6 +43,19 @@ class Source(ABC):
         Used to detect deletions.
         """
         ...
+
+    def reconcile_supported(self) -> bool:
+        """False for sources that cannot cheaply list what currently exists."""
+        return True
+
+    def retention_cutoff(self) -> datetime | None:
+        """Objects last updated before this instant are never deleted by reconciliation.
+
+        Rolling-window sources (mail, calendar, Slack, ``since_days`` transcripts) only
+        list recent items; without this, items that merely aged out of the window
+        would be treated as deleted. ``None`` means every stored object is reconcilable.
+        """
+        return None
 
     def validate(self) -> list[str]:
         """Validate source configuration.

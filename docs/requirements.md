@@ -63,6 +63,22 @@
 - Inaccessible recordings (locked/leaver OneDrives) skipped quietly, never fatal
 - Never mass-deletes on a partial enumeration (reconcile aborts on errors)
 
+### Email, Calendar and Slack (v1.3.0)
+- Reuse the persistent browser profile's SSO session — no app registration, API
+  token or admin consent; credentials held in memory only, never persisted/logged
+- Email: chosen folders (default inbox + sent), rolling `since_days` window, one
+  file per message; quoted history trimmed; sender/subject exclusion globs
+- Calendar: `past_days`/`future_days` window, one file per event occurrence;
+  change key drives updates; cancelled events removed
+- Slack: one digest per conversation per UTC day (channels, private, DMs, group
+  DMs, threads); Enterprise Grid supported by reading each workspace
+- Strictly read-only (GET / read-only Slack methods); tokens sent only to the
+  configured https host
+- Aged-out items are retained; items deleted inside the window are reconciled;
+  Slack never deletes
+- `workctx auth login-web --source <name>` for the rare human sign-in; `doctor`
+  checks every source; silent SSO re-login when the session lapses
+
 ## KPIs
 - Initial sync: complete and correct
 - Daily sync with no changes: seconds, near-zero API calls

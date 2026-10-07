@@ -2,8 +2,8 @@
 
 ## Current Status
 - All core phases complete + LLM integration polish + external review hardening
-- 365 tests passing, 0 lint errors in touched files (pre-existing RUF005 in scheduler.py)
-- **v1.2.0: invited-meetings scope for transcripts.** **v1.1.0: Teams meeting transcripts** source (`sources.transcripts`) — see CHANGELOG; dogfooded live (62 transcripts, ~12s, idempotent)
+- 481 tests passing, 0 lint errors in touched files (pre-existing RUF005 in scheduler.py)
+- **v1.3.0: email, calendar and Slack sources** (browser-session tokens, read-only, in memory) — dogfooded live. **v1.2.0: invited-meetings scope for transcripts.** **v1.1.0: Teams meeting transcripts** source (`sources.transcripts`) — see CHANGELOG; dogfooded live (62 transcripts, ~12s, idempotent)
 - Background daemon with Telegram commands (launchd KeepAlive on macOS)
 - Cross-platform service management (launchd, systemd, Task Scheduler)
 - First-run bootstrap scripts for macOS/Linux and Windows
@@ -81,3 +81,10 @@
 - **"Only my meetings" bug (v1.1.0)**: I scoped discovery to own OneDrive + `SharedWithUsersOWSUSER`, which only matched ~25 of the recordings others had shared (Teams shares via *link to specific users*, which that search property often does not index). A plain `ProgId:Media.Meeting` search is already security-trimmed to everything the user can open (2,042 recordings vs 82). Lesson: don't hand-build access scopes; start from the trimmed set and filter. Per-item `/permissions` does NOT list link grantees, so it can't prove invitation; site `effectivebasepermissions` (AddListItems) separates team members from read-only visitors (`SharePoint site groups` membership did not work: M365-group members aren't in SP groups).
 - Dogfood scale: 1,602 transcripts / 88 MB / 7m46s first sync with a few 429s (Retry-After capped at 30s was enough); idempotent re-run 26s.
 - A tool call that returns 'exit 1 in 0.5s' may be a second concurrent `workctx` hitting the run.lock while the first still runs — check `run.lock`/process list before re-running.
+- **Email/calendar/Slack discoveries (Oct 2026)**: Outlook on the web keeps MSAL access tokens (aud `https://outlook.office.com`, Mail.Read*/Calendars.Read*) in localStorage; they work as Bearer on the Outlook REST API v2.0 (PascalCase JSON) with no app registration. Slack's `localStorage.localConfig_v2` holds per-workspace `xoxc-` tokens, valid only together with the `d` cookie; Enterprise Grid org (`E…`) tokens get `enterprise_is_restricted`, use the `T…` workspaces. Headless Chromium must advertise a current Chrome UA (replace `HeadlessChrome`) or Slack shows "update your browser". Signed-out Slack → open the workspace's own sign-in URL and click the SSO button; existing Entra SSO completes silently.
+- The user's real Chrome profile (Keychain-encrypted cookies) cannot be read while Chrome runs; reuse the workctx Playwright profile instead. Experiments ran on a profile copy.
+- `ruff format src tests` reformatted ~15 unrelated files (pure churn) — only format the files you touch, and `git checkout` the rest before committing.
+- Two test fixtures that both monkeypatch the global `httpx.Client` stack on each other; give each source module its own `httpx` stand-in (`_httpx_with_client`) and capture the real client once in `tests/fake_web.py`.
+- Reconciliation only runs every `reconciliation_days` (and is not counted in `objects_deleted`) — tests must call `_reconcile_source` directly.
+- Exclusion globs for senders must match the bare address as well as `Name <addr>` (found by a failing test, not by the live run).
+- Rolling-window sources need `retention_cutoff` or aged-out items look deleted; Slack opts out of reconcile entirely.

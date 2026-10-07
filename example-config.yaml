@@ -106,6 +106,47 @@ sources:
   #     # exclude_titles: ["*1:1*"]            # case-insensitive globs on the title
 
   # ──────────────────────────────────────────────────────────
+  # Email, calendar and Slack — read through your logged-in browser profile
+  # ──────────────────────────────────────────────────────────
+  # No app registration or API token: these reuse the browser profile that
+  # already holds your single-sign-on session (same one as a `mode: browser`
+  # SharePoint source). Credentials are read at sync time and kept in memory
+  # only. Everything is read-only. If a session lapses, sign in once with
+  #   workctx auth login-web --source <name>
+  # Use `sharepoint_source: <name>` to share a SharePoint login, or
+  # `profile: <name>` for a standalone browser profile.
+  #
+  # mail:                                    # Outlook / Exchange Online, one file per message
+  #   - name: "work-mail"
+  #     sharepoint_source: "my-sharepoint"
+  #     # folders: ["inbox", "sentitems"]    # well-known names or custom folder names
+  #     # since_days: 30                     # rolling window
+  #     # exclude_senders: ["noreply@*"]     # globs on address or display name
+  #     # exclude_subjects: ["automatic reply*"]
+  #     # trim_quoted_replies: true          # drop quoted history below a reply
+  #     # max_body_chars: 20000
+  #
+  # calendar:                                # one file per event/occurrence
+  #   - name: "work-calendar"
+  #     sharepoint_source: "my-sharepoint"
+  #     # past_days: 30
+  #     # future_days: 60
+  #     # include_cancelled: false
+  #     # exclude_titles: ["lunch", "focus time*"]
+  #
+  # slack:                                   # one digest per conversation per day
+  #   - name: "work-slack"
+  #     sharepoint_source: "my-sharepoint"
+  #     client_url: "https://app.slack.com/client/<ENTERPRISE-OR-TEAM-ID>/"   # as in your browser
+  #     # signin_url: "https://<org>.enterprise.slack.com/"  # for silent SSO sign-in if logged out
+  #     # since_days: 14
+  #     # conversation_types: ["public_channel", "private_channel", "mpim", "im"]
+  #     # workspaces: ["my-workspace"]         # default: every workspace you belong to
+  #     # include_channels: ["team-*"]         # globs; default: everything you are in
+  #     # exclude_channels: ["random", "*-alerts"]
+  #     # include_threads: true
+
+  # ──────────────────────────────────────────────────────────
   # Local folders — scan any directories on your filesystem
   # ──────────────────────────────────────────────────────────
   # local_folders:

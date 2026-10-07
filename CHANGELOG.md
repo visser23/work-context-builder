@@ -3,6 +3,38 @@
 All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.3.0]
+
+### Added
+- **Email source** (`sources.mail`): Outlook / Exchange Online messages from
+  chosen folders (default inbox + sent items), one Markdown file per message
+  under `email/<source>/<YYYY>/<MM>/`, with sender, folder and participants
+  front matter, quoted-reply trimming, attachment names and sender/subject
+  exclusion globs.
+- **Calendar source** (`sources.calendar`): past and upcoming events (including
+  each recurring occurrence) under `calendar/<source>/<YYYY>/<MM>/`, with time,
+  location, organiser, attendee responses and the online-meeting link;
+  changes are detected via the event change key, cancelled events are removed.
+- **Slack source** (`sources.slack`): one digest per conversation per UTC day
+  under `slack/<source>/<workspace>/<conversation>/`, covering public/private
+  channels, DMs and group DMs with thread replies, resolved mentions,
+  mrkdwn-to-Markdown conversion, files/reactions and bot messages. Works with
+  Enterprise Grid (each workspace is read separately).
+- All three authenticate through the existing persistent browser profile (no app
+  registration or API tokens): short-lived Outlook/Slack tokens are read into
+  memory only, with silent SSO re-login (`signin_url` / `sso_button_text` for
+  Slack) and `workctx auth login-web --source <name>` for the rare human step.
+- `workctx doctor` checks for the new sources; generated CONTEXT/AGENTS/CLAUDE/
+  PROJECT_BRIEF/CHATGPT docs and the index describe them.
+- Rolling-window reconciliation: sources can declare `retention_cutoff()` /
+  `reconcile_supported()` so items that merely aged out of a window are kept;
+  Teams transcripts honour `since_days` the same way.
+
+### Security
+- Tokens are only sent to the configured https API host (no redirects; Slack
+  hosts must be `*.slack.com`); never logged (`repr` hidden); every call is a
+  read (`GET` / read-only Slack methods).
+
 ## [1.2.0]
 
 ### Added

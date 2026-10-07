@@ -11,6 +11,11 @@
          │                      │       │ Teams transcripts (SharePoint│
          │                      │       │ Search + media API, cookies) │
          │                      │       └──────────────────┬───────────┘
+         │                      │       ┌──────────────────┴───────────┐
+         │                      │       │ Outlook mail + calendar,     │
+         │                      │       │ Slack (browser-session tokens│
+         │                      │       │ read in memory, read-only)   │
+         │                      │       └──────────────────┬───────────┘
          └──────────────────────┼───────────────────────────┘
                                 │
                     ┌───────────▼───────────┐
@@ -119,8 +124,16 @@ src/workctx/
     ├── sharepoint.py ────── SharePoint local (OneDrive) mode
     ├── sharepoint_web.py ── SharePoint browser mode (REST API)
     ├── local_folder.py ──── Local filesystem directory scanner
-    └── teams_transcripts.py  Teams meeting transcripts (search + v2.1 media API)
+    ├── teams_transcripts.py  Teams meeting transcripts (search + v2.1 media API)
+    ├── outlook.py ───────── Mail + calendar adapters (Outlook REST, session token)
+    └── slack.py ─────────── Slack day digests (Web API, xoxc + d cookie)
+
+auth/webtokens.py ────────── Headless browser-profile → Outlook/Slack tokens (memory only)
 ```
+
+Token acquisition: `Source adapter → webtokens._run_in_browser (serialised by
+_BROWSER_LOCK) → token cached in memory → httpx (https, host-pinned, read-only)`.
+
 
 ## Storage Layout
 
@@ -149,7 +162,10 @@ LLM Corpus (in OneDrive):
 ├── confluence/<source-name>/<space>/<id>-<slug>.md
 ├── jira/<source-name>/<project>/<ISSUE-KEY>.md
 ├── sharepoint/<source-name>/<relative-path>.md
-└── transcripts/<source-name>/<year>/<date>-<title>-<id8>.md
+├── transcripts/<source-name>/<year>/<date>-<title>-<id8>.md
+├── email/<source-name>/<year>/<month>/<date>-<subject>-<id8>.md
+├── calendar/<source-name>/<year>/<month>/<date>-<title>-<id8>.md
+└── slack/<source-name>/<workspace>/<conversation>-<id>/<YYYY-MM-DD>.md
 ```
 
 ## Sync Flow (per source)

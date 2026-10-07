@@ -122,6 +122,17 @@
 - [x] README, example config, CHANGELOG, version 1.1.0
 - [x] v1.2.0: `include_invited` / `include_all_sites` — all invited meetings via tenant-wide security-trimmed search + site-permission filter (live: 1,602 transcripts)
 
+## Phase 13: Email, Calendar, Slack (v1.3.0)
+- [x] Feasibility proven live: Outlook MSAL token + REST v2.0 (mail, calendar); Slack xoxc/d via silent SSO (headless needs real Chrome UA)
+- [x] Config (`mail`/`calendar`/`slack`, `profile` or `sharepoint_source`), models, front matter fields
+- [x] `auth/webtokens.py` + `auth login-web` CLI
+- [x] Outlook client + `MailAdapter`/`CalendarAdapter`; Slack client + `SlackAdapter`
+- [x] Normalisers (quoted-reply trimming, mrkdwn conversion, day digests)
+- [x] Rolling-window reconcile (`retention_cutoff`, `reconcile_supported`)
+- [x] Corpus paths, INDEX/CONTEXT/AGENTS/CLAUDE/BRIEF/ChatGPT docs, `doctor` checks
+- [x] 116 new offline tests (fake Outlook/Slack APIs); live dogfood (219 mail, 110 events, 47 Slack digests; idempotent re-run)
+- [x] README, example config, CHANGELOG, version 1.3.0
+
 ## Documentation
 - [x] README.md (installation → first sync)
 - [x] Example configuration file

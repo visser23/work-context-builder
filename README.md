@@ -1,7 +1,8 @@
 # Work Context Builder
 
-**Turn your Confluence, Jira, SharePoint, Teams meeting transcripts, and
-local files into a clean Markdown knowledge base that any AI can read.**
+**Turn your Confluence, Jira, SharePoint, Teams meeting transcripts, email,
+calendar, Slack and local files into a clean Markdown knowledge base that any
+AI can read.**
 
 Work Context Mirror syncs your work content into simple Markdown files
 on your computer. Once set up, a background daemon keeps everything
@@ -15,6 +16,9 @@ Jira        ─┤
 SharePoint  ─┤     Work Context Mirror      ┌── ChatGPT
 Teams       ─┤──>  (background daemon)  ──>  ├── Codex / Claude Code
  transcripts ─┤     daily + on-demand         └── Any LLM with file access
+Email       ─┤
+Calendar    ─┤
+Slack       ─┤
 Local files ─┘
                          ▲
                    Telegram: /sync /status
@@ -34,6 +38,7 @@ Local files ─┘
    - [Getting a Personal Access Token (Data Center)](#getting-a-personal-access-token-data-center)
    - [SharePoint Setup](#sharepoint-setup)
    - [Teams Meeting Transcripts](#teams-meeting-transcripts)
+   - [Email, Calendar and Slack](#email-calendar-and-slack)
    - [Local Folders](#local-folders)
    - [Telegram Notifications (Optional)](#telegram-notifications-optional)
 4. [Running Your First Sync](#running-your-first-sync)
@@ -54,6 +59,7 @@ Local files ─┘
 - **Jira** issues become Markdown with comments, links, and custom fields
 - **SharePoint** documents (Word, Excel, PDF, 60+ formats) are converted to Markdown
 - **Teams meeting transcripts** (yours and those shared with you) become searchable Markdown with speaker names and timestamps — no app registration needed
+- **Email** (Outlook / Exchange Online inbox + sent items), your **calendar** (past and upcoming events, attendees, join links) and **Slack** (channels, DMs, threads — one digest per conversation per day) are pulled daily and indexed — no app registration, tokens or admin consent needed
 - **Local folders** are scanned recursively — point at OneDrive, project directories, anything
 - Only changed content is reprocessed (incremental sync — fast after first run)
 - Unconvertible files (video, images, binaries) are detected and skipped automatically
@@ -430,6 +436,96 @@ Consecutive lines from one speaker are merged into paragraphs.
 > it, and check your employer's information governance policy first. Cookies are only ever sent to
 > your own tenant's two SharePoint hosts.
 
+### Email, Calendar and Slack
+
+Pulls your day-to-day working context — what people wrote to you, what is in
+your diary, what was said in chat — into `email/`, `calendar/` and `slack/`
+folders, all full-text indexed like everything else. Like the transcripts
+source it **reuses the browser profile that already holds your single-sign-on
+session**, so there is no Azure app registration, no Slack app, no API token
+and no admin consent.
+
+**How it works:** the sync opens that profile in a headless browser, reads the
+access token Outlook on the web (or the Slack web client) already holds, and
+closes the browser. The credentials stay **in memory only** — they are never
+written to disk, the keychain or the logs — and are used for ordinary read-only
+API calls to your own Outlook / Slack host. If the single-sign-on session has
+lapsed the browser signs in silently; if a human is needed, run
+`uv run workctx auth login-web --source <name>` once.
+
+**Prerequisites:** Playwright (`uv sync --extra playwright && uv run playwright
+install chromium`) and a browser profile that is signed in to the app. The
+easiest route is a `mode: browser` SharePoint source (see
+[SharePoint Setup](#sharepoint-setup)) in the same Microsoft account — point
+`sharepoint_source` at it. Otherwise use `profile: <name>` and run
+`workctx auth login-web --source <name>`.
+
+```yaml
+sources:
+  mail:
+    - name: work-mail
+      sharepoint_source: my-sharepoint     # or: profile: my-profile
+      # folders: ["inbox", "sentitems"]    # well-known names or your own folder names
+      # since_days: 30                     # rolling window; older mail already synced is kept
+      # exclude_senders: ["noreply@*"]     # globs on address or display name
+      # exclude_subjects: ["automatic reply*"]
+      # trim_quoted_replies: true          # cut the quoted history below a reply
+      # max_body_chars: 20000
+
+  calendar:
+    - name: work-calendar
+      sharepoint_source: my-sharepoint
+      # past_days: 30
+      # future_days: 60
+      # include_cancelled: false
+      # exclude_titles: ["lunch", "focus time*"]
+
+  slack:
+    - name: work-slack
+      sharepoint_source: my-sharepoint
+      client_url: "https://app.slack.com/client/E0XXXXXXXXX/"   # copy from your browser's address bar
+      # signin_url: "https://my-org.enterprise.slack.com/"      # lets a lapsed session sign in silently via SSO
+      # since_days: 14
+      # conversation_types: ["public_channel", "private_channel", "mpim", "im"]
+      # workspaces: ["my-workspace"]       # default: every workspace you belong to
+      # include_channels: ["team-*"]       # globs; default: all conversations you are in
+      # exclude_channels: ["random", "*-alerts"]
+      # include_threads: true
+```
+
+**Output:**
+
+```
+email/<source>/<YYYY>/<MM>/<date>-<subject>-<id>.md                one file per message
+calendar/<source>/<YYYY>/<MM>/<date>-<title>-<id>.md               one file per event
+slack/<source>/<workspace>/<conversation>-<id>/<YYYY-MM-DD>.md     one digest per day
+```
+
+Email files carry `sender`, `folder` and `participants` front matter and the
+message body (HTML flattened to text, quoted history trimmed, attachments
+listed by name). Calendar files carry `start_at`, `end_at`, `location`,
+`organizer` and `participants`, plus the attendee responses and Teams join
+link. Slack digests carry `workspace`, `channel`, `message_count` and
+`participants`; mentions become names, links stay clickable, thread replies
+show what they reply to, and Enterprise Grid orgs work (each workspace you
+belong to is read separately).
+
+**Window semantics:** these sources read a rolling window (`since_days` /
+`past_days`). Items that age out of the window stay in your corpus; items that
+are deleted or cancelled *inside* the window are removed at the next
+reconciliation. Slack history is a skim and is never deleted. Raise the
+window once to back-fill, then lower it again if you like.
+
+**Run only these:** `uv run workctx sync --source work-mail --source work-calendar --source work-slack`
+
+> **Privacy:** this is *your* mailbox, diary and DMs, so the corpus will
+> contain other people's private messages. Use `exclude_senders`,
+> `exclude_subjects`, `exclude_channels`, `conversation_types` (drop `im` and
+> `mpim`) and short windows to narrow it, keep the output folder somewhere
+> private, and check your employer's information-governance policy first.
+> The tool only issues read requests: nothing is sent, moved, flagged,
+> marked as read, posted or reacted to.
+
 ### Local Folders
 
 Point at any directories on your computer and they'll be scanned recursively:
@@ -619,6 +715,7 @@ running from the repo directory.
 | `workctx auth set <ref>` | Store a secret (token, password, etc.) |
 | `workctx auth remove <ref>` | Delete a stored secret |
 | `workctx auth login-sharepoint --source <name>` | Browser login for SharePoint cookie capture |
+| `workctx auth login-web --source <name>` | Visible browser sign-in for an email, calendar or Slack source (rarely needed) |
 | `workctx reconcile` | Force deletion detection across all sources |
 | `workctx reindex` | Rebuild the full-text search index |
 
@@ -644,6 +741,9 @@ running from the repo directory.
 ├── jira/<source>/<project>/<ISSUE-KEY>.md
 ├── sharepoint/<source>/<path>/<document>.md
 ├── transcripts/<source>/<year>/<date>-<meeting>-<id>.md
+├── email/<source>/<year>/<month>/<date>-<subject>-<id>.md
+├── calendar/<source>/<year>/<month>/<date>-<title>-<id>.md
+├── slack/<source>/<workspace>/<conversation>/<YYYY-MM-DD>.md
 └── local_folder/<source>/<dir>/<file>.md
 ```
 
@@ -751,6 +851,8 @@ to each source, and reports exactly what's wrong.
 | `SharePoint session expired` | The automatic headless refresh already failed, so a human step is needed (password/MFA, or the ~90-day login lapsed). Run `workctx-relogin --source <name>` (works even if OneDrive is down). Falls back to `uv run workctx auth login-sharepoint --config workctx.yaml --source <name>`. Look for `Headless refresh for … found no valid cookies (last page: …)` in `logs/daemon-stderr.log` to see where SSO got stuck |
 | `Sync failed with unhandled exception` + `Resource deadlock avoided` / `os error 60` while writing `_meta/*` | OneDrive File Provider hiccup. Metadata writes now retry automatically; a run-level failure is reported as FAILED (and alerted) rather than "healthy" |
 | Teams transcripts sync finds nothing | Check the meeting was recorded **with transcription**, that `sharepoint_source` points at a logged-in browser-mode source, and run `uv run workctx doctor --verbose` (it probes both SharePoint hosts). Recordings in a departed colleague's locked OneDrive are skipped quietly (HTTP 423) |
+| Email / calendar / Slack: `No Outlook session` / `No Slack session` | The browser profile is signed out and silent SSO could not finish (password/MFA needed). Run `uv run workctx auth login-web --source <name>`, finish signing in, then sync again. For Slack set `signin_url` to your workspace's own sign-in page (e.g. `https://my-org.enterprise.slack.com/`) so it can sign back in by itself |
+| Slack shows a browser-not-supported page / nothing is found | Update Playwright's Chromium (`uv run playwright install chromium`). On Enterprise Grid make sure `client_url` is the URL you use in your browser; the org-level token cannot read messages, so the tool reads each workspace you belong to |
 | `Playwright not installed` | Run `uv sync --extra playwright && uv run playwright install chromium` |
 | `Lock file stale` | Another sync crashed. Delete `run.lock` from the state directory |
 | `Daemon not running` | Run `uv run workctx service-status`, then `uv run workctx install-service` to reinstall |
@@ -781,7 +883,12 @@ You can override this with `state_dir` in your config.
 - All processing happens **locally on your machine** — no content is
   sent to any external service
 - Source systems are accessed **read-only** — the tool never creates,
-  modifies, or deletes anything in Confluence, Jira, SharePoint, or Teams
+  modifies, or deletes anything in Confluence, Jira, SharePoint, Teams,
+  Outlook or Slack
+- Email, calendar and Slack use the **session your browser already has**:
+  short-lived tokens are read from the browser profile into memory for the
+  run, are sent only to your own Outlook / Slack host (https, no redirects),
+  and are never written to disk or logs
 - A log filter prevents secrets from appearing in log files
 
 > **Heads up:** Synchronising organisational information to a locally
@@ -794,7 +901,7 @@ You can override this with `state_dir` in your config.
 
 ```bash
 uv sync --extra dev
-uv run pytest                    # 365 tests
+uv run pytest                    # 481 tests
 uv run ruff check src/ tests/   # lint
 uv run ruff format src/ tests/  # format
 ```

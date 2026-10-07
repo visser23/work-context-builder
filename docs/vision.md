@@ -10,7 +10,8 @@ if it were an expert in that project.
 
 A lightweight macOS application that creates and continuously maintains a local,
 LLM-friendly mirror of selected work knowledge held across Confluence, Jira,
-SharePoint/OneDrive, and Teams meeting transcripts.
+SharePoint/OneDrive, Teams meeting transcripts, and day-to-day context (email,
+calendar, Slack).
 
 ## What It Is Not
 
