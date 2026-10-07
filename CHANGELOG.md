@@ -3,6 +3,26 @@
 All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.3.1]
+
+### Fixed
+- Enterprise Grid: DMs, group DMs and shared channels are listed by every
+  workspace and were written once per workspace (duplicate digests). Each
+  conversation is now read once from a single owning workspace; digests already
+  stored under another workspace are removed automatically.
+
+- Outlook throttling (HTTP 429) during a large back-fill: one throttled request
+  now pauses every worker thread (shared back-off) and the retry budget is 8
+  attempts, so a 12,000-message import no longer drops items (5 had failed).
+- Read timeouts / connection errors talking to Outlook are retried with back-off
+  (a year-long calendar query timed out once and failed the whole source).
+
+### Changed
+- Larger default windows (mail 90 days, calendar 90 days back, Slack 30 days) and
+  a 50,000-message per-folder cap (was 5,000, which would have truncated large
+  inboxes); mail listing uses 200-item pages. Set `since_days: 3650` (mail) or a
+  large Slack `since_days` to back-fill the whole history.
+
 ## [1.3.0]
 
 ### Added

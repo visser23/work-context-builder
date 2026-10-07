@@ -2,8 +2,8 @@
 
 ## Current Status
 - All core phases complete + LLM integration polish + external review hardening
-- 481 tests passing, 0 lint errors in touched files (pre-existing RUF005 in scheduler.py)
-- **v1.3.0: email, calendar and Slack sources** (browser-session tokens, read-only, in memory) — dogfooded live. **v1.2.0: invited-meetings scope for transcripts.** **v1.1.0: Teams meeting transcripts** source (`sources.transcripts`) — see CHANGELOG; dogfooded live (62 transcripts, ~12s, idempotent)
+- 485 tests passing, 0 lint errors in touched files (pre-existing RUF005 in scheduler.py)
+- **v1.3.1/v1.3.0: email, calendar and Slack sources** (browser-session tokens, read-only, in memory) — dogfooded live. **v1.2.0: invited-meetings scope for transcripts.** **v1.1.0: Teams meeting transcripts** source (`sources.transcripts`) — see CHANGELOG; dogfooded live (62 transcripts, ~12s, idempotent)
 - Background daemon with Telegram commands (launchd KeepAlive on macOS)
 - Cross-platform service management (launchd, systemd, Task Scheduler)
 - First-run bootstrap scripts for macOS/Linux and Windows
@@ -88,3 +88,7 @@
 - Reconciliation only runs every `reconciliation_days` (and is not counted in `objects_deleted`) — tests must call `_reconcile_source` directly.
 - Exclusion globs for senders must match the bare address as well as `Name <addr>` (found by a failing test, not by the live run).
 - Rolling-window sources need `retention_cutoff` or aged-out items look deleted; Slack opts out of reconcile entirely.
+- **"Numbers look low" (v1.3.1)**: not a pagination bug — verified the mailbox has 10,128 inbox + 2,969 sent and the API pages all of them; the 30-day default window explained 805. Always compare against the source's own totals (`TotalItemCount`) before suspecting code. Real fixes: bigger defaults, 50k cap (5k would truncate), and a 365/3650-day back-fill in the user's config.
+- **Enterprise Grid duplicates**: DMs/group DMs are listed (same ids, same history) by every workspace → duplicate digests. Read each conversation once from an owner workspace (existing holder wins, else lowest id) and DELETE the rest. Found by comparing conversation counts between workspaces (385 vs 375, identical 189 mpim / 171 im).
+- Bulk imports hit Outlook `ApplicationThrottled`: per-thread sleeps are not enough with 4 workers — share the pause across threads and allow 8 retries.
+- Background jobs started with `nohup … &` inside a tool call die when the call returns; use the tool's own background mode. A daemon starting while a manual sync holds `run.lock` records a (spurious) failed sync and sends a Telegram alert — stop the service or wait before manual runs.

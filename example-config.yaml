@@ -120,7 +120,7 @@ sources:
   #   - name: "work-mail"
   #     sharepoint_source: "my-sharepoint"
   #     # folders: ["inbox", "sentitems"]    # well-known names or custom folder names
-  #     # since_days: 30                     # rolling window
+  #     # since_days: 90                     # rolling window (3650 = everything)
   #     # exclude_senders: ["noreply@*"]     # globs on address or display name
   #     # exclude_subjects: ["automatic reply*"]
   #     # trim_quoted_replies: true          # drop quoted history below a reply
@@ -129,7 +129,7 @@ sources:
   # calendar:                                # one file per event/occurrence
   #   - name: "work-calendar"
   #     sharepoint_source: "my-sharepoint"
-  #     # past_days: 30
+  #     # past_days: 90
   #     # future_days: 60
   #     # include_cancelled: false
   #     # exclude_titles: ["lunch", "focus time*"]
@@ -139,7 +139,7 @@ sources:
   #     sharepoint_source: "my-sharepoint"
   #     client_url: "https://app.slack.com/client/<ENTERPRISE-OR-TEAM-ID>/"   # as in your browser
   #     # signin_url: "https://<org>.enterprise.slack.com/"  # for silent SSO sign-in if logged out
-  #     # since_days: 14
+  #     # since_days: 30
   #     # conversation_types: ["public_channel", "private_channel", "mpim", "im"]
   #     # workspaces: ["my-workspace"]         # default: every workspace you belong to
   #     # include_channels: ["team-*"]         # globs; default: everything you are in

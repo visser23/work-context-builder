@@ -277,6 +277,60 @@ def test_slack_session_refresh_end_to_end(chat, project):
     assert chat.session_requests == [False, True]
 
 
+def _grid_teams(slack_api):
+    from workctx.auth.webtokens import SlackTeam
+
+    def team(tid, domain):
+        return SlackTeam(
+            tid, domain.title(), domain, f"https://{domain}.slack.com", slack_api.token
+        )
+
+    return team("T1", "alpha"), team("T2", "bravo")
+
+
+def test_grid_dms_are_read_once_from_one_workspace(chat, project):
+    t1, t2 = _grid_teams(chat)
+    chat.session_teams = [t2, t1]  # order must not matter
+    chat.conversations.append({"id": "D1", "is_im": True, "user": "U1"})
+    chat.messages["D1"] = [{"ts": slack_ts(0, 9, seq=9), "user": "U1", "text": "private hello"}]
+
+    result = run(project, "chat")
+    assert result.status == RunStatus.HEALTHY
+    paths = [p.relative_to(project["out"]).as_posix() for p in files(project["out"], "slack")]
+    assert paths and all(p.startswith("slack/chat/alpha/") for p in paths), paths
+    assert sum("private hello" in p.read_text() for p in files(project["out"], "slack")) == 1
+    history_calls = [pr["channel"] for m, pr in chat.requests if m == "conversations.history"]
+    assert sorted(history_calls) == sorted(set(history_calls)), "each conversation read once"
+
+    again = run(project, "chat").source_results[0]
+    assert (again.objects_added, again.objects_updated) == (0, 0)
+
+
+def test_existing_workspace_keeps_ownership_and_duplicates_are_pruned(chat, project):
+    t1, t2 = _grid_teams(chat)
+    chat.session_teams = [t2]  # first sync happens while only T2 is visible
+    run(project, "chat")
+    chat.session_teams = [t1]  # ...then T1 appears too: both workspaces hold digests
+    run(project, "chat")
+    db = StateDB(project["state"] / "state.sqlite")
+    try:
+        assert {sid.split(":")[0] for sid in db.get_all_source_ids("chat")} == {"T1", "T2"}
+    finally:
+        db.close()
+
+    chat.session_teams = [t2, t1]
+    result = run(project, "chat")
+    assert result.status == RunStatus.HEALTHY
+    db = StateDB(project["state"] / "state.sqlite")
+    try:
+        # lowest id (T1) owns it; T2's duplicates were deleted
+        assert {sid.split(":")[0] for sid in db.get_all_source_ids("chat")} == {"T1"}
+    finally:
+        db.close()
+    assert all("/bravo/" not in p.as_posix() for p in files(project["out"], "slack"))
+    assert len(files(project["out"], "slack")) == 2
+
+
 # --------------------------------------------------- everything together
 
 

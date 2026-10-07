@@ -42,8 +42,8 @@ from workctx.state import StateDB
 logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = 60.0
-PAGE_SIZE = 50
-MAX_RETRIES = 4
+PAGE_SIZE = 200
+MAX_RETRIES = 8
 MAX_RETRY_WAIT_SECONDS = 60.0
 WELL_KNOWN_FOLDERS = {
     "inbox": "Inbox",
@@ -93,6 +93,7 @@ class OutlookClient:
         self._client: httpx.Client | None = None
         self._lock = threading.Lock()
         self._token: WebToken | None = None
+        self._pause_until = 0.0  # shared back-off: one 429 slows every worker thread
 
     def _default_token(self, force: bool) -> WebToken:
         return webtokens.get_outlook_token(self._profile, self._mailbox_url, force=force)
@@ -129,12 +130,25 @@ class OutlookClient:
         refreshed = False
         resp: httpx.Response | None = None
         for attempt in range(MAX_RETRIES):
+            pause = self._pause_until - time.monotonic()
+            if pause > 0:
+                time.sleep(pause)
             headers = {
                 "Authorization": f"Bearer {self._bearer()}",
                 "Accept": "application/json",
                 "Prefer": _PREFER,
             }
-            resp = self._http().get(url, params=params, headers=headers)
+            try:
+                resp = self._http().get(url, params=params, headers=headers)
+            except httpx.TransportError as exc:  # read timeouts etc. are transient
+                if attempt == MAX_RETRIES - 1:
+                    raise
+                wait = min(2.0 ** (attempt + 1), MAX_RETRY_WAIT_SECONDS)
+                logger.warning(
+                    "Outlook request failed (%s), retrying in %.0fs", type(exc).__name__, wait
+                )
+                self._pause_until = max(self._pause_until, time.monotonic() + wait)
+                continue
             if resp.status_code == 401 and not refreshed:
                 refreshed = True
                 self._bearer(force=True)
@@ -142,7 +156,7 @@ class OutlookClient:
             if resp.status_code in (429, 503, 504):
                 wait = _retry_after(resp, default=2.0 ** (attempt + 1))
                 logger.warning("Outlook throttled (HTTP %d), waiting %.0fs", resp.status_code, wait)
-                time.sleep(wait)
+                self._pause_until = max(self._pause_until, time.monotonic() + wait)
                 continue
             break
         assert resp is not None
@@ -428,7 +442,7 @@ class CalendarAdapter(_OutlookSource):
             "startDateTime": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "endDateTime": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "$orderby": "Start/DateTime",
-            "$top": "100",
+            "$top": "50",
             "$select": select,
         }
         for event in client.pages("/me/calendarview", params):
