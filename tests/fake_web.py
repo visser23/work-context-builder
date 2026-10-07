@@ -45,6 +45,7 @@ class FakeOutlook:
         self.page_size = 50
         self.unauthorised_once = 0
         self.throttle_once = 0
+        self.timeout_once = 0
         self.attachments: dict[str, list[dict[str, Any]]] = {}
         self.fail_attachments = False
 
@@ -146,6 +147,9 @@ class FakeOutlook:
         if self.unauthorised_once:
             self.unauthorised_once -= 1
             return httpx.Response(401)
+        if self.timeout_once:
+            self.timeout_once -= 1
+            raise httpx.ReadTimeout("timed out", request=request)
         if self.throttle_once:
             self.throttle_once -= 1
             return httpx.Response(429, headers={"Retry-After": "0"})

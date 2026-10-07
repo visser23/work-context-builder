@@ -313,17 +313,28 @@ class SlackAdapter(Source):
         latest = {} if full else self._latest_stored_days(stored)
         window_start = self._window_start()
 
-        jobs: list[tuple[SlackClient, _Conversation, datetime]] = []
+        listed: list[tuple[SlackClient, _Conversation]] = []
         for team in teams:
             client = self._client(team, session)
-            for conv in self._conversations(client):
-                last_day = latest.get((team.id, conv.id))
-                oldest = window_start
-                if last_day:
-                    oldest = max(window_start, day_start(last_day) - timedelta(days=1))
-                jobs.append((client, conv, oldest))
+            listed.extend((client, conv) for conv in self._conversations(client))
 
-        changes: list[DiscoveredChange] = []
+        # Enterprise Grid: DMs, group DMs and shared channels are listed (with the same
+        # id and history) by every workspace. Read each one once, from a single owner.
+        visible: dict[str, set[str]] = {}
+        for client, conv in listed:
+            visible.setdefault(conv.id, set()).add(client.team.id)
+        owners = self._owners(visible, stored)
+        jobs: list[tuple[SlackClient, _Conversation, datetime]] = []
+        for client, conv in listed:
+            if owners[conv.id] != client.team.id:
+                continue
+            last_day = latest.get((client.team.id, conv.id))
+            oldest = window_start
+            if last_day:
+                oldest = max(window_start, day_start(last_day) - timedelta(days=1))
+            jobs.append((client, conv, oldest))
+
+        changes: list[DiscoveredChange] = self._duplicate_removals(owners, visible, stored)
         errors: list[str] = []
         with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
             futures = {
@@ -354,6 +365,38 @@ class SlackAdapter(Source):
             len(changes),
         )
         return changes
+
+    @staticmethod
+    def _owners(visible: dict[str, set[str]], stored: dict[str, Any]) -> dict[str, str]:
+        """Conversation id -> the one workspace that is read for it.
+
+        A workspace that already holds stored digests keeps ownership (so existing data
+        is not re-created); otherwise the lowest workspace id wins, deterministically.
+        """
+        stored_teams: dict[str, set[str]] = {}
+        for source_id in stored:
+            parts = source_id.split(":")
+            if len(parts) == 3:
+                stored_teams.setdefault(parts[1], set()).add(parts[0])
+        return {
+            conv_id: min((stored_teams.get(conv_id, set()) & teams) or teams)
+            for conv_id, teams in visible.items()
+        }
+
+    @staticmethod
+    def _duplicate_removals(
+        owners: dict[str, str], visible: dict[str, set[str]], stored: dict[str, Any]
+    ) -> list[DiscoveredChange]:
+        """DELETE changes for digests another visible workspace now owns."""
+        removals: list[DiscoveredChange] = []
+        for source_id in stored:
+            parts = source_id.split(":")
+            if len(parts) != 3:
+                continue
+            team_id, conv_id, _day = parts
+            if team_id in visible.get(conv_id, set()) and owners[conv_id] != team_id:
+                removals.append(DiscoveredChange(source_id=source_id, action=ChangeAction.DELETE))
+        return removals
 
     # -- conversations -------------------------------------------------------------
 

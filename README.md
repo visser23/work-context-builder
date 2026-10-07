@@ -466,7 +466,7 @@ sources:
     - name: work-mail
       sharepoint_source: my-sharepoint     # or: profile: my-profile
       # folders: ["inbox", "sentitems"]    # well-known names or your own folder names
-      # since_days: 30                     # rolling window; older mail already synced is kept
+      # since_days: 90                     # rolling window (3650 = everything); older mail already synced is kept
       # exclude_senders: ["noreply@*"]     # globs on address or display name
       # exclude_subjects: ["automatic reply*"]
       # trim_quoted_replies: true          # cut the quoted history below a reply
@@ -475,7 +475,7 @@ sources:
   calendar:
     - name: work-calendar
       sharepoint_source: my-sharepoint
-      # past_days: 30
+      # past_days: 90
       # future_days: 60
       # include_cancelled: false
       # exclude_titles: ["lunch", "focus time*"]
@@ -485,7 +485,7 @@ sources:
       sharepoint_source: my-sharepoint
       client_url: "https://app.slack.com/client/E0XXXXXXXXX/"   # copy from your browser's address bar
       # signin_url: "https://my-org.enterprise.slack.com/"      # lets a lapsed session sign in silently via SSO
-      # since_days: 14
+      # since_days: 30
       # conversation_types: ["public_channel", "private_channel", "mpim", "im"]
       # workspaces: ["my-workspace"]       # default: every workspace you belong to
       # include_channels: ["team-*"]       # globs; default: all conversations you are in
@@ -513,8 +513,13 @@ belong to is read separately).
 **Window semantics:** these sources read a rolling window (`since_days` /
 `past_days`). Items that age out of the window stay in your corpus; items that
 are deleted or cancelled *inside* the window are removed at the next
-reconciliation. Slack history is a skim and is never deleted. Raise the
-window once to back-fill, then lower it again if you like.
+reconciliation. Slack history is a skim and is never deleted. Defaults are
+modest (mail 90 days, calendar 90 past/60 future, Slack 30 days): **to back-fill
+your history set a larger window** — e.g. `since_days: 3650` for mail or
+`since_days: 365` for Slack — and the first sync will import it all (a mailbox
+of ~13,000 messages takes roughly half an hour); later runs only fetch what is
+new. On Enterprise Grid, DMs and group DMs appear in every workspace; each is
+read once, from a single workspace folder.
 
 **Run only these:** `uv run workctx sync --source work-mail --source work-calendar --source work-slack`
 
@@ -901,7 +906,7 @@ You can override this with `state_dir` in your config.
 
 ```bash
 uv sync --extra dev
-uv run pytest                    # 481 tests
+uv run pytest                    # 486 tests
 uv run ruff check src/ tests/   # lint
 uv run ruff format src/ tests/  # format
 ```

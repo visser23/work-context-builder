@@ -81,10 +81,13 @@ def slack_api(monkeypatch):
         token=fake.token,
     )
     fake.session_requests = []
+    fake.session_teams = None  # set to a list to simulate several workspaces
 
     def provider(profile, client_url, *, force=False, **_kw):
         fake.session_requests.append(force)
-        return webtokens.SlackSession([fake.team], SLACK_COOKIE.removeprefix("d="))
+        return webtokens.SlackSession(
+            fake.session_teams or [fake.team], SLACK_COOKIE.removeprefix("d=")
+        )
 
     def make_client(**kw):
         return fake_web._REAL_CLIENT(transport=httpx.MockTransport(fake.handler), **kw)

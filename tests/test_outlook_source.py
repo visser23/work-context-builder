@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from tests.fake_web import OUTLOOK_HOST, days_ago
@@ -238,3 +239,33 @@ def test_calendar_paging(outlook, db):
     for i in range(5):
         outlook.add_event(f"e{i}", f"Event {i}", days_ago(i + 1))
     assert len(CalendarAdapter(cal_cfg()).discover_changes(db, None)) == 5
+
+
+def test_throttling_pauses_every_request_not_just_the_failing_one(outlook, monkeypatch):
+    from workctx.sources import outlook as ol
+
+    slept: list[float] = []
+    clock = {"now": 100.0}
+    monkeypatch.setattr(ol.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        ol.time, "sleep", lambda s: (slept.append(s), clock.__setitem__("now", clock["now"] + s))
+    )
+    client = OutlookClient(profile="p", mailbox_url="https://x", api_base=API)
+    client._pause_until = clock["now"] + 7  # another worker was just throttled
+    client.get("/me")
+    assert slept and 6.9 < slept[0] <= 7.0
+
+
+def test_client_survives_a_long_throttle_burst(outlook):
+    outlook.throttle_once = 7  # more than the old 4-attempt budget
+    client = OutlookClient(profile="p", mailbox_url="https://x", api_base=API)
+    assert client.get_json("/me")["DisplayName"]
+
+
+def test_client_retries_read_timeouts(outlook):
+    outlook.timeout_once = 2
+    client = OutlookClient(profile="p", mailbox_url="https://x", api_base=API)
+    assert client.get_json("/me")["DisplayName"]
+    outlook.timeout_once = 99
+    with pytest.raises(httpx.ReadTimeout):
+        client.get("/me")

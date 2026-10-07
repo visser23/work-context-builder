@@ -156,9 +156,10 @@ class MailSource(BrowserSessionSource):
     folders: list[str] = Field(default_factory=lambda: ["inbox", "sentitems"])
     """Well-known folder names (inbox, sentitems, archive, drafts, deleteditems,
     junkemail) or display names of your own folders."""
-    since_days: int = Field(default=30, ge=1)
-    """How far back to read. Older messages already in the corpus are kept."""
-    max_messages: int = Field(default=5000, ge=1)
+    since_days: int = Field(default=90, ge=1)
+    """How far back to read (use 3650 for 'everything'). Older messages already in
+    the corpus are kept."""
+    max_messages: int = Field(default=50_000, ge=1)
     """Safety cap on messages per folder per run."""
     exclude_senders: list[str] = Field(default_factory=list)
     """Case-insensitive globs on the sender address or name; matches are skipped."""
@@ -174,7 +175,7 @@ class CalendarSource(BrowserSessionSource):
 
     mailbox_url: str = "https://outlook.office.com/mail/"
     api_base: str = "https://outlook.office.com/api/v2.0"
-    past_days: int = Field(default=30, ge=0)
+    past_days: int = Field(default=90, ge=0)
     future_days: int = Field(default=60, ge=0)
     include_cancelled: bool = False
     exclude_titles: list[str] = Field(default_factory=list)
@@ -191,7 +192,7 @@ class SlackSource(BrowserSessionSource):
 
     client_url: str
     """Your Slack web client URL, e.g. ``https://app.slack.com/client/E0XXXXXXXX/``."""
-    since_days: int = Field(default=14, ge=1)
+    since_days: int = Field(default=30, ge=1)
     conversation_types: list[Literal["public_channel", "private_channel", "mpim", "im"]] = Field(
         default_factory=lambda: ["public_channel", "private_channel", "mpim", "im"]
     )
