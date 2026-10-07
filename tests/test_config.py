@@ -253,3 +253,82 @@ class TestFindConfig:
         monkeypatch.chdir(tmp_path)
         with pytest.raises(SystemExit):
             _find_config(None)
+
+
+# -- Teams transcripts source --
+
+
+def _tx_config(transcripts, sharepoint=None):
+    return {
+        "version": 1,
+        "project": {"id": "p", "name": "P", "output_root": "/tmp/x"},
+        "sources": {
+            "sharepoint": sharepoint if sharepoint is not None else [_browser_sp("sp")],
+            "transcripts": transcripts,
+        },
+    }
+
+
+def _browser_sp(name):
+    return {
+        "name": name,
+        "site_url": "https://contoso.sharepoint.com/sites/x",
+        "mode": "browser",
+        "auth": {"mode": "browser", "secret_ref": "sp-cookies"},
+    }
+
+
+def test_transcripts_source_reusing_sharepoint_login():
+    cfg = ProjectConfig.model_validate(
+        _tx_config([{"name": "tx", "sharepoint_source": "sp"}])
+    )
+    (tx,) = cfg.sources.transcripts
+    assert tx.include_own and tx.include_shared
+    assert tx.sites == [] and tx.since_days is None and tx.exclude_titles == []
+    assert "tx" in cfg.all_source_names()
+
+
+def test_transcripts_source_standalone_needs_site_and_secret():
+    ok = _tx_config(
+        [
+            {
+                "name": "tx",
+                "site_url": "https://contoso.sharepoint.com",
+                "auth": {"mode": "browser", "secret_ref": "r"},
+            }
+        ],
+        sharepoint=[],
+    )
+    assert ProjectConfig.model_validate(ok).sources.transcripts[0].site_url
+
+    for bad in (
+        {"name": "tx"},
+        {"name": "tx", "site_url": "https://contoso.sharepoint.com"},
+        {"name": "tx", "auth": {"mode": "browser", "secret_ref": "r"}},
+    ):
+        with pytest.raises(ValueError, match="Transcripts source 'tx'"):
+            ProjectConfig.model_validate(_tx_config([bad], sharepoint=[]))
+
+
+def test_transcripts_source_must_reference_browser_sharepoint():
+    with pytest.raises(ValueError, match="not a 'mode: browser'"):
+        ProjectConfig.model_validate(
+            _tx_config([{"name": "tx", "sharepoint_source": "missing"}])
+        )
+    local = {"name": "sp", "mode": "onedrive_local", "local_path": "/tmp/x"}
+    with pytest.raises(ValueError, match="not a 'mode: browser'"):
+        ProjectConfig.model_validate(
+            _tx_config([{"name": "tx", "sharepoint_source": "sp"}], sharepoint=[local])
+        )
+
+
+def test_transcripts_source_name_must_be_unique():
+    with pytest.raises(ValueError, match="Duplicate source name 'sp'"):
+        ProjectConfig.model_validate(_tx_config([{"name": "sp", "sharepoint_source": "sp"}]))
+
+
+def test_transcripts_since_days_must_be_positive():
+    with pytest.raises(ValueError):
+        ProjectConfig.model_validate(
+            _tx_config([{"name": "tx", "sharepoint_source": "sp", "since_days": 0}])
+        )

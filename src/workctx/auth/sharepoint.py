@@ -394,5 +394,42 @@ def _is_login_redirect(url: str) -> bool:
     return any(indicator in url for indicator in login_indicators)
 
 
+def tenant_hosts(url: str) -> tuple[str, str]:
+    """Return ``(team_sites_root, onedrive_root)`` URLs for the tenant behind ``url``.
+
+    SharePoint Online serves team sites from ``https://<tenant>.sharepoint.com`` and
+    personal OneDrives from ``https://<tenant>-my.sharepoint.com``. Session cookies
+    (``FedAuth``) are per host, so each needs its own login capture.
+    Raises ``ValueError`` if ``url`` is not a SharePoint Online URL.
+    """
+    host = (urlparse(url).hostname or "").lower()
+    first, _, rest = host.partition(".")
+    if not first or "sharepoint" not in rest:
+        raise ValueError(f"Not a SharePoint Online URL: {_safe_url(url)}")
+    tenant = first[: -len("-my")] if first.endswith("-my") else first
+    return f"https://{tenant}.{rest}", f"https://{tenant}-my.{rest}"
+
+
+def onedrive_secret_ref(secret_ref: str) -> str:
+    """Credential-store key for the OneDrive-host cookies derived from ``secret_ref``."""
+    return f"{secret_ref}-my"
+
+
+def get_valid_cookies(host_url: str, profile_name: str, secret_ref: str) -> dict[str, str]:
+    """Return cookies for ``host_url`` that SharePoint currently accepts.
+
+    Tries the credential-store copy first (one cheap HTTP check); on rejection
+    falls back to a headless refresh using the persistent browser profile
+    ``profile_name`` (silent SSO). Raises ``SessionExpiredError`` if a human
+    login is genuinely required.
+    """
+    cached = load_cookies(secret_ref)
+    if cached and _http_test_cookies(host_url, cached):
+        return cached
+    if cached:
+        logger.info("Cached cookies for %s rejected, refreshing via browser", _safe_url(host_url))
+    return keepalive_and_extract(host_url, profile_name, secret_ref)
+
+
 class SessionExpiredError(Exception):
     """Raised when SharePoint session cookies are expired or missing."""

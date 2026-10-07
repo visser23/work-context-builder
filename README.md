@@ -1,7 +1,7 @@
 # Work Context Builder
 
-**Turn your Confluence, Jira, SharePoint, and local files into a clean
-Markdown knowledge base that any AI can read.**
+**Turn your Confluence, Jira, SharePoint, Teams meeting transcripts, and
+local files into a clean Markdown knowledge base that any AI can read.**
 
 Work Context Mirror syncs your work content into simple Markdown files
 on your computer. Once set up, a background daemon keeps everything
@@ -11,9 +11,11 @@ using up-to-date context.
 
 ```
 Confluence  ─┐
-Jira        ─┤     Work Context Mirror      ┌── ChatGPT
-SharePoint  ─┤──>  (background daemon)  ──>  ├── Codex / Claude Code
-Local files ─┘     daily + on-demand         └── Any LLM with file access
+Jira        ─┤
+SharePoint  ─┤     Work Context Mirror      ┌── ChatGPT
+Teams       ─┤──>  (background daemon)  ──>  ├── Codex / Claude Code
+ transcripts ─┤     daily + on-demand         └── Any LLM with file access
+Local files ─┘
                          ▲
                    Telegram: /sync /status
 ```
@@ -31,6 +33,7 @@ Local files ─┘     daily + on-demand         └── Any LLM with file acc
    - [Getting an Atlassian API Token (Cloud)](#getting-an-atlassian-api-token-cloud)
    - [Getting a Personal Access Token (Data Center)](#getting-a-personal-access-token-data-center)
    - [SharePoint Setup](#sharepoint-setup)
+   - [Teams Meeting Transcripts](#teams-meeting-transcripts)
    - [Local Folders](#local-folders)
    - [Telegram Notifications (Optional)](#telegram-notifications-optional)
 4. [Running Your First Sync](#running-your-first-sync)
@@ -50,6 +53,7 @@ Local files ─┘     daily + on-demand         └── Any LLM with file acc
 - **Confluence** pages become individual Markdown files with metadata
 - **Jira** issues become Markdown with comments, links, and custom fields
 - **SharePoint** documents (Word, Excel, PDF, 60+ formats) are converted to Markdown
+- **Teams meeting transcripts** (yours and those shared with you) become searchable Markdown with speaker names and timestamps — no app registration needed
 - **Local folders** are scanned recursively — point at OneDrive, project directories, anything
 - Only changed content is reprocessed (incremental sync — fast after first run)
 - Unconvertible files (video, images, binaries) are detected and skipped automatically
@@ -343,6 +347,70 @@ captures the session cookies automatically.
 >   the easiest way to check is to go to Site Contents in the browser and look at the library name).
 >   The folder path in the URL (`Shared Documents`) and the list title can be different!
 
+### Teams Meeting Transcripts
+
+Pulls the transcripts of every Teams meeting you recorded or that was
+shared with you into a `transcripts/` folder, and adds them to the
+full-text search index. It **reuses your SharePoint browser login** — no
+Azure app registration, no admin consent, no extra token.
+
+**How it works:** when a Teams meeting is recorded with transcription on,
+the transcript is stored with the `.mp4` recording (in the organiser's
+OneDrive `Recordings` folder, or a team site). The tool finds those
+recordings with SharePoint Search, then downloads each transcript through
+SharePoint's media API using your existing session cookies.
+
+**Prerequisites:**
+
+1. A SharePoint source in **browser mode** (see [SharePoint Setup](#sharepoint-setup))
+   that you have already logged in to (`workctx auth login-sharepoint`).
+2. Playwright installed (`uv sync --extra playwright && uv run playwright install chromium`).
+   OneDrive lives on a second host (`<tenant>-my.sharepoint.com`); its
+   cookies are obtained automatically and silently from the same browser
+   profile the first time they are needed.
+
+**Config:**
+
+```yaml
+sources:
+  sharepoint:
+    - name: my-sharepoint            # your existing browser-mode source
+      site_url: "https://contoso.sharepoint.com/sites/MyTeam"
+      # ...
+      auth:
+        mode: browser
+        secret_ref: my-sharepoint-cookies
+
+  transcripts:
+    - name: teams-transcripts
+      sharepoint_source: my-sharepoint   # which login to reuse
+      # Optional:
+      # include_own: true                # recordings in your own OneDrive (default)
+      # include_shared: true             # recordings shared with you (default)
+      # sites:                           # extra team-site URLs holding recordings
+      #   - "https://contoso.sharepoint.com/sites/MyTeam"
+      # since_days: 365                  # only meetings from the last N days
+      # exclude_titles: ["1:1", "HR"]    # skip meetings whose title contains these
+```
+
+**Output** (one file per meeting):
+
+```
+transcripts/<source>/<YYYY>/<YYYY-MM-DD>-<meeting-title>-<id>.md
+```
+
+Each file has front matter (`meeting_date`, `duration_minutes`,
+`participants`) and a body of `[HH:MM:SS] **Speaker:** text` turns.
+Consecutive lines from one speaker are merged into paragraphs.
+
+**Run only this source:** `uv run workctx sync --source teams-transcripts`
+
+> **Privacy:** this includes *every* meeting you attended with a
+> recording — including 1:1s. Use `exclude_titles`, `since_days` and
+> `include_shared: false` to narrow it, and check your employer's
+> information governance policy first. Cookies are only ever sent to
+> your own tenant's two SharePoint hosts.
+
 ### Local Folders
 
 Point at any directories on your computer and they'll be scanned recursively:
@@ -522,6 +590,7 @@ running from the repo directory.
 | `workctx doctor` | Validates config, checks auth, tests connectivity |
 | `workctx sync` | Incremental sync (only changes since last run) |
 | `workctx sync --full` | Full sync (reprocesses everything) |
+| `workctx sync --source <name>` | Sync only the named source(s); repeat the flag for several |
 | `workctx status` | Shows per-source sync times and object counts |
 | `workctx search "query"` | Full-text search across the entire corpus |
 | `workctx daemon` | Run the daemon in the foreground (for debugging) |
@@ -555,6 +624,7 @@ running from the repo directory.
 ├── jira/<source>/SUMMARY.md               Same as above, Markdown table
 ├── jira/<source>/<project>/<ISSUE-KEY>.md
 ├── sharepoint/<source>/<path>/<document>.md
+├── transcripts/<source>/<year>/<date>-<meeting>-<id>.md
 └── local_folder/<source>/<dir>/<file>.md
 ```
 
@@ -661,6 +731,7 @@ to each source, and reports exactly what's wrong.
 | `401 Unauthorized` on Confluence/Jira | Your token expired or is wrong. Generate a new one and `uv run workctx auth set <ref>` |
 | `SharePoint session expired` | The automatic headless refresh already failed, so a human step is needed (password/MFA, or the ~90-day login lapsed). Run `workctx-relogin --source <name>` (works even if OneDrive is down). Falls back to `uv run workctx auth login-sharepoint --config workctx.yaml --source <name>`. Look for `Headless refresh for … found no valid cookies (last page: …)` in `logs/daemon-stderr.log` to see where SSO got stuck |
 | `Sync failed with unhandled exception` + `Resource deadlock avoided` / `os error 60` while writing `_meta/*` | OneDrive File Provider hiccup. Metadata writes now retry automatically; a run-level failure is reported as FAILED (and alerted) rather than "healthy" |
+| Teams transcripts sync finds nothing | Check the meeting was recorded **with transcription**, that `sharepoint_source` points at a logged-in browser-mode source, and run `uv run workctx doctor --verbose` (it probes both SharePoint hosts). Recordings in a departed colleague's locked OneDrive are skipped quietly (HTTP 423) |
 | `Playwright not installed` | Run `uv sync --extra playwright && uv run playwright install chromium` |
 | `Lock file stale` | Another sync crashed. Delete `run.lock` from the state directory |
 | `Daemon not running` | Run `uv run workctx service-status`, then `uv run workctx install-service` to reinstall |
@@ -691,7 +762,7 @@ You can override this with `state_dir` in your config.
 - All processing happens **locally on your machine** — no content is
   sent to any external service
 - Source systems are accessed **read-only** — the tool never creates,
-  modifies, or deletes anything in Confluence, Jira, or SharePoint
+  modifies, or deletes anything in Confluence, Jira, SharePoint, or Teams
 - A log filter prevents secrets from appearing in log files
 
 > **Heads up:** Synchronising organisational information to a locally
@@ -704,7 +775,7 @@ You can override this with `state_dir` in your config.
 
 ```bash
 uv sync --extra dev
-uv run pytest                    # 234 tests
+uv run pytest                    # 355 tests
 uv run ruff check src/ tests/   # lint
 uv run ruff format src/ tests/  # format
 ```

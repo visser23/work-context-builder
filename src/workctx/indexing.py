@@ -10,6 +10,14 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+MAX_INDEX_BODY_CHARS = 400_000
+"""Per-document cap on indexed body text.
+
+Sized above ``sync.large_document_chars`` (300k default, the split threshold) so
+every part of a long document - e.g. a multi-hour meeting transcript - is fully
+searchable rather than only its first few pages.
+"""
+
 FTS_CREATE = """
 CREATE VIRTUAL TABLE IF NOT EXISTS fts_index USING fts5(
     title,
@@ -66,7 +74,7 @@ class SearchIndex:
             """,
             (
                 title or "",
-                body[:50000],
+                body[:MAX_INDEX_BODY_CHARS],
                 source_type,
                 source_name,
                 source_key or "",
@@ -132,7 +140,7 @@ class SearchIndex:
                 """,
                 (
                     front_matter.get("title", md_file.stem),
-                    body[:50000],
+                    body[:MAX_INDEX_BODY_CHARS],
                     front_matter.get("source_type", ""),
                     front_matter.get("source_name", ""),
                     front_matter.get("source_key", front_matter.get("issue_key", "")),

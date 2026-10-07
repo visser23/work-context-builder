@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+import json
 from datetime import datetime
 from typing import Any
 
@@ -14,6 +15,7 @@ class SourceType(enum.StrEnum):
     JIRA = "jira"
     SHAREPOINT = "sharepoint"
     LOCAL_FOLDER = "local_folder"
+    TRANSCRIPT = "transcripts"
 
 
 class RunStatus(enum.StrEnum):
@@ -102,6 +104,10 @@ class FrontMatter(BaseModel):
     part_number: int | None = None
     total_parts: int | None = None
     parent_source_id: str | None = None
+    # Meeting-transcript provenance (only set for ``transcripts`` sources)
+    meeting_date: str | None = None
+    duration_minutes: int | None = None
+    participants: list[str] | None = None
 
     def to_yaml_str(self) -> str:
         """Render as YAML front matter block."""
@@ -109,6 +115,9 @@ class FrontMatter(BaseModel):
         for key, value in self.model_dump(exclude_none=True).items():
             if isinstance(value, datetime):
                 lines.append(f"{key}: {value.isoformat()}")
+            elif isinstance(value, list):
+                # JSON flow sequences are valid YAML and escape quotes/commas for us.
+                lines.append(f"{key}: {json.dumps([str(v) for v in value], ensure_ascii=False)}")
             elif isinstance(value, int | float):
                 lines.append(f"{key}: {value}")
             else:

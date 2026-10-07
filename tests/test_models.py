@@ -76,3 +76,30 @@ def test_manifest_entry_json():
     json_str = entry.model_dump_json()
     assert "TEST-1" in json_str
     assert "jira" in json_str
+
+
+def test_front_matter_lists_and_meeting_fields():
+    fm = FrontMatter(
+        source_type="transcripts",
+        source_name="teams",
+        source_id="abc",
+        title="Weekly sync",
+        meeting_date="2026-06-25",
+        duration_minutes=76,
+        participants=["Lovelace, Ada (ORG)", 'Bob "The Builder", Jr'],
+    )
+    out = fm.to_yaml_str()
+    assert "meeting_date: 2026-06-25" in out
+    assert "duration_minutes: 76" in out
+
+    import yaml
+
+    parsed = yaml.safe_load(out.strip("-\n"))
+    assert parsed["participants"] == ["Lovelace, Ada (ORG)", 'Bob "The Builder", Jr']
+    assert parsed["source_type"] == "transcripts"
+
+
+def test_front_matter_omits_unset_meeting_fields():
+    fm = FrontMatter(source_type="jira", source_name="j", source_id="1", title="T")
+    out = fm.to_yaml_str()
+    assert "participants" not in out and "meeting_date" not in out
