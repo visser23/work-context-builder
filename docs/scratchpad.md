@@ -2,8 +2,8 @@
 
 ## Current Status
 - All core phases complete + LLM integration polish + external review hardening
-- 355 tests passing, 0 lint errors in touched files (pre-existing RUF005 in scheduler.py)
-- **v1.1.0: Teams meeting transcripts** source (`sources.transcripts`) — see CHANGELOG; dogfooded live (62 transcripts, ~12s, idempotent)
+- 365 tests passing, 0 lint errors in touched files (pre-existing RUF005 in scheduler.py)
+- **v1.2.0: invited-meetings scope for transcripts.** **v1.1.0: Teams meeting transcripts** source (`sources.transcripts`) — see CHANGELOG; dogfooded live (62 transcripts, ~12s, idempotent)
 - Background daemon with Telegram commands (launchd KeepAlive on macOS)
 - Cross-platform service management (launchd, systemd, Task Scheduler)
 - First-run bootstrap scripts for macOS/Linux and Windows
@@ -78,3 +78,6 @@
 - Shared test fakes belong in `tests/fake_sharepoint.py` + `tests/conftest.py` (importing a fixture from another test module triggers ruff F811).
 - `uv run` on the OneDrive-hosted `.venv` can hang; use a local venv (`/tmp/wctx-dev`) for tests and `python -c "from workctx.cli import main; main()"` for live runs.
 - To roll the feature out to the background daemon: `uv run workctx install-service` (rebuilds the daemon venv + refreshes its config copy).
+- **"Only my meetings" bug (v1.1.0)**: I scoped discovery to own OneDrive + `SharedWithUsersOWSUSER`, which only matched ~25 of the recordings others had shared (Teams shares via *link to specific users*, which that search property often does not index). A plain `ProgId:Media.Meeting` search is already security-trimmed to everything the user can open (2,042 recordings vs 82). Lesson: don't hand-build access scopes; start from the trimmed set and filter. Per-item `/permissions` does NOT list link grantees, so it can't prove invitation; site `effectivebasepermissions` (AddListItems) separates team members from read-only visitors (`SharePoint site groups` membership did not work: M365-group members aren't in SP groups).
+- Dogfood scale: 1,602 transcripts / 88 MB / 7m46s first sync with a few 429s (Retry-After capped at 30s was enough); idempotent re-run 26s.
+- A tool call that returns 'exit 1 in 0.5s' may be a second concurrent `workctx` hitting the run.lock while the first still runs — check `run.lock`/process list before re-running.

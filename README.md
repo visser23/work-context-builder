@@ -385,13 +385,32 @@ sources:
     - name: teams-transcripts
       sharepoint_source: my-sharepoint   # which login to reuse
       # Optional:
-      # include_own: true                # recordings in your own OneDrive (default)
-      # include_shared: true             # recordings shared with you (default)
-      # sites:                           # extra team-site URLs holding recordings
+      # include_own: true                # meetings you organised (default)
+      # include_shared: true             # recordings shared directly with you (default)
+      # include_invited: true            # EVERY meeting you were invited to (default)
+      # include_all_sites: false         # also org-wide sites you can only read
+      # sites:                           # extra site URLs whose recordings are always included
       #   - "https://contoso.sharepoint.com/sites/MyTeam"
       # since_days: 365                  # only meetings from the last N days
-      # exclude_titles: ["1:1", "HR"]    # skip meetings whose title contains these
+      # exclude_titles: ["*1:1*", "*HR*"]  # case-insensitive globs on the meeting title
 ```
+
+**Which meetings are included?** SharePoint Search only returns recordings
+your account can open, and Teams only grants access to people who were
+invited. With `include_invited: true` (the default) the tool takes that
+tenant-wide list and keeps:
+
+| Where the recording lives | Included when |
+|---|---|
+| Your own OneDrive | always (`include_own`) |
+| Someone else's OneDrive | you can open it — Teams only shares these with invited participants |
+| A Teams team site (`/sites/msteams_*`) | you can open it (channel meetings) |
+| Any other SharePoint site | you are a member/contributor of that site (this includes your project site) |
+| Read-only sites (e.g. organisation-wide webinars, directorate sites) | only with `include_all_sites: true` |
+
+Expect hundreds or thousands of meetings on a first sync in a large
+organisation (a real-world run: ~1,600 transcripts, ~90 MB, ~8 minutes;
+later runs take ~30 seconds). Use `since_days` to limit the history.
 
 **Output** (one file per meeting):
 
@@ -405,10 +424,10 @@ Consecutive lines from one speaker are merged into paragraphs.
 
 **Run only this source:** `uv run workctx sync --source teams-transcripts`
 
-> **Privacy:** this includes *every* meeting you attended with a
-> recording — including 1:1s. Use `exclude_titles`, `since_days` and
-> `include_shared: false` to narrow it, and check your employer's
-> information governance policy first. Cookies are only ever sent to
+> **Privacy:** this includes *every* meeting you were invited to that was
+> recorded and transcribed — including other people's 1:1s that you were in.
+> Use `exclude_titles`, `since_days` and `include_invited: false` to narrow
+> it, and check your employer's information governance policy first. Cookies are only ever sent to
 > your own tenant's two SharePoint hosts.
 
 ### Local Folders
@@ -775,7 +794,7 @@ You can override this with `state_dir` in your config.
 
 ```bash
 uv sync --extra dev
-uv run pytest                    # 355 tests
+uv run pytest                    # 365 tests
 uv run ruff check src/ tests/   # lint
 uv run ruff format src/ tests/  # format
 ```

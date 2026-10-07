@@ -8,9 +8,12 @@ media item as a Stream *media transcript*.
 This adapter reuses a browser-mode SharePoint login (``rtFa``/``FedAuth``
 cookies - no Microsoft app registration needed) to:
 
-1. **Discover** recordings through SharePoint Search (``ProgId:Media.Meeting``),
-   scoped to the user's own OneDrive, items shared directly with them, and any
-   extra team sites listed in the config.
+1. **Discover** recordings through SharePoint Search (``ProgId:Media.Meeting``).
+   Search is security-trimmed, so a tenant-wide query returns exactly the
+   recordings the user can open. Those are narrowed to the meetings the user
+   was *invited to*: their own OneDrive, other people's OneDrives (Teams only
+   grants those to invited participants), Teams team sites and sites where the
+   user is a contributor. Extra sites can be added explicitly.
 2. **List** each item's transcripts via the OneDrive/SharePoint ``v2.1`` API.
 3. **Download** the JSON transcript (carries speaker names) and render Markdown.
 
@@ -75,6 +78,9 @@ RECENT_RECHECK_DAYS = 14
 # deleted, gone, or the owner's OneDrive is locked/blocked (e.g. a leaver's account).
 _INACCESSIBLE_STATUSES = frozenset({400, 403, 404, 410, 423})
 # Teams' own placeholder identity for service-created media items.
+# SharePoint base-permission bit (``Low`` word) for "add list items" - held by
+# site members/owners but not by read-only visitors.
+_ADD_LIST_ITEMS = 0x2
 _SERVICE_ACCOUNT_NAMES = {"sharepoint app", "system account"}
 
 _CHROMIUM_UA = (
@@ -109,6 +115,11 @@ class RecordingHit:
             bases.append(f"{self.web_url}/_api/v2.1/drives/{drive_id}/items/{self.uid}")
         bases.append(f"{self.web_url}/_api/v2.1/drive/items/{self.uid}")
         return bases
+
+
+def _is_teams_site(web_url: str) -> bool:
+    """Sites Teams auto-creates for team channels are named ``/sites/msteams_<id>``."""
+    return urlparse(web_url).path.lower().startswith("/sites/msteams_")
 
 
 def _drive_id(site_id: str, web_id: str, list_id: str) -> str | None:
@@ -198,8 +209,14 @@ class TeamsTranscriptSource(Source):
         for site in self.config.sites:
             if self._host_root(site) not in self._refs:
                 issues.append(f"{self.name}: site '{site}' is not on this SharePoint tenant")
-        if not (self.config.include_own or self.config.include_shared or self.config.sites):
-            issues.append(f"{self.name}: nothing to sync (own, shared and sites all disabled)")
+        if not (
+            self.config.include_own
+            or self.config.include_shared
+            or self.config.include_invited
+            or self.config.include_all_sites
+            or self.config.sites
+        ):
+            issues.append(f"{self.name}: nothing to sync (every include_* option is disabled)")
         return issues
 
     def discover_changes(
@@ -326,6 +343,22 @@ class TeamsTranscriptSource(Source):
                 if hit:
                     by_uid.setdefault(hit.uid, hit)
 
+        if self.config.include_invited or self.config.include_all_sites:
+            everything = [
+                hit
+                for hit in (self._row_to_hit(row) for row in self._search("ProgId:Media.Meeting"))
+                if hit
+            ]
+            selected = self._select_invited(everything)
+            logger.info(
+                "Transcripts/%s: %d recordings visible tenant-wide, %d selected as invited",
+                self.name,
+                len(everything),
+                len(selected),
+            )
+            for hit in selected:
+                by_uid.setdefault(hit.uid, hit)
+
         cutoff = (
             datetime.now(UTC) - timedelta(days=self.config.since_days)
             if self.config.since_days
@@ -344,6 +377,59 @@ class TeamsTranscriptSource(Source):
 
         hits.sort(key=lambda h: h.modified or datetime.min.replace(tzinfo=UTC), reverse=True)
         return hits
+
+    def _is_personal(self, web_url: str) -> bool:
+        """True for a person's OneDrive (``<tenant>-my.sharepoint.com/personal/…``)."""
+        return self._host_root(web_url) == self._my_root and urlparse(
+            web_url
+        ).path.lower().startswith("/personal/")
+
+    def _select_invited(self, hits: list[RecordingHit]) -> list[RecordingHit]:
+        """Narrow tenant-wide, security-trimmed hits to meetings the user was invited to.
+
+        * Another person's OneDrive: Teams only shares those with invited participants.
+        * A Teams-generated team site (``/sites/msteams_*``): a channel meeting.
+        * Any other site where the user can add items (member/owner of the site).
+        * Everything else (read-only access, e.g. organisation-wide sites) only when
+          ``include_all_sites`` is set.
+        """
+        keep: list[RecordingHit] = []
+        site_webs = sorted({h.web_url for h in hits if not self._is_personal(h.web_url)})
+        contributor: dict[str, bool] = {}
+        if self.config.include_invited and site_webs:
+            to_check = [w for w in site_webs if not _is_teams_site(w)]
+            with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
+                for web, can in zip(
+                    to_check, pool.map(self._can_contribute, to_check), strict=True
+                ):
+                    contributor[web] = can
+        for hit in hits:
+            if self._is_personal(hit.web_url):
+                invited = self.config.include_invited
+            else:
+                invited = self.config.include_invited and (
+                    _is_teams_site(hit.web_url) or contributor.get(hit.web_url, False)
+                )
+                invited = invited or self.config.include_all_sites
+            if invited:
+                keep.append(hit)
+        return keep
+
+    def _can_contribute(self, web_url: str) -> bool:
+        """Does the logged-in user have *add items* rights on this site (is a member)?"""
+        resp = self._get(f"{web_url}/_api/web/effectivebasepermissions")
+        if resp.status_code in _INACCESSIBLE_STATUSES:
+            return False
+        if resp.status_code != 200:
+            raise RuntimeError(f"site permission check failed (HTTP {resp.status_code})")
+        data = resp.json()
+        perms = data.get("EffectiveBasePermissions") or data.get("d", {}).get(
+            "EffectiveBasePermissions", data
+        )
+        try:
+            return bool(int(perms["Low"]) & _ADD_LIST_ITEMS)
+        except (KeyError, TypeError, ValueError):
+            return False
 
     def _identity(self) -> tuple[str | None, list[str]]:
         """Return ``(personal_onedrive_url, [identities used for 'shared with me'])``."""

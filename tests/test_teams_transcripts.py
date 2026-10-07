@@ -299,6 +299,86 @@ class TestDiscovery:
             make_source().discover_changes(db, None)
 
 
+# ------------------------------------------------------------ invited scope
+THIRD_PERSONAL = f"{MY}/personal/pat_third_contoso_com"
+MEMBER_SITE = f"{TEAM}/sites/Project"
+READONLY_SITE = f"{TEAM}/sites/AllStaff"
+TEAMS_SITE = f"{TEAM}/sites/msteams_abc123"
+
+
+class TestInvitedScope:
+    """``include_invited`` finds every meeting the user can open and was invited to."""
+
+    def _ids(self, src, db):
+        return {c.source_id for c in src.discover_changes(db, None)}
+
+    def test_other_peoples_onedrive_recordings_are_included(self, tenant, db):
+        tenant.add(uid(1), "Mine", web=PERSONAL, scope="own")
+        # Not in "shared with me" search results, but visible => invited.
+        tenant.add(uid(2), "Hosted by Sam", web=OTHER_PERSONAL, scope="hidden")
+        tenant.add(uid(3), "Hosted by Pat", web=THIRD_PERSONAL, scope="hidden")
+        assert self._ids(make_source(include_invited=True), db) == {uid(1), uid(2), uid(3)}
+
+    def test_disabled_keeps_only_own_and_shared(self, tenant, db):
+        tenant.add(uid(1), "Mine", web=PERSONAL, scope="own")
+        tenant.add(uid(2), "Shared", web=OTHER_PERSONAL, scope="shared")
+        tenant.add(uid(3), "Hosted by Pat", web=THIRD_PERSONAL, scope="hidden")
+        assert self._ids(make_source(include_invited=False), db) == {uid(1), uid(2)}
+
+    def test_site_recordings_need_membership_or_a_teams_site(self, tenant, db):
+        tenant.contributor_webs.add(MEMBER_SITE)
+        tenant.add(uid(1), "Project sync", web=MEMBER_SITE, scope="hidden")
+        tenant.add(uid(2), "Channel meeting", web=TEAMS_SITE, scope="hidden")
+        tenant.add(uid(3), "All staff webinar", web=READONLY_SITE, scope="hidden")
+        assert self._ids(make_source(include_invited=True), db) == {uid(1), uid(2)}
+
+    def test_include_all_sites_adds_read_only_sites(self, tenant, db):
+        tenant.add(uid(1), "All staff webinar", web=READONLY_SITE, scope="hidden")
+        tenant.add(uid(2), "Hosted by Pat", web=THIRD_PERSONAL, scope="hidden")
+        src = make_source(include_invited=False, include_all_sites=True)
+        # all-sites does not pull in other people's OneDrives
+        assert self._ids(src, db) == {uid(1)}
+        src = make_source(include_invited=True, include_all_sites=True)
+        assert self._ids(src, db) == {uid(1), uid(2)}
+
+    def test_permission_check_inaccessible_site_is_not_invited(self, tenant, db):
+        tenant.permission_status = 403
+        tenant.add(uid(1), "Locked site", web=MEMBER_SITE, scope="hidden")
+        assert self._ids(make_source(include_invited=True), db) == set()
+
+    def test_permission_check_server_error_aborts_instead_of_dropping(self, tenant, db):
+        tenant.permission_status = 500
+        tenant.add(uid(1), "Project sync", web=MEMBER_SITE, scope="hidden")
+        src = make_source(include_invited=True)
+        with pytest.raises(RuntimeError, match="permission check failed"):
+            src.discover_changes(db, None)
+        with pytest.raises(RuntimeError, match="permission check failed"):
+            src.get_current_ids()
+
+    def test_current_ids_matches_discovery_scope(self, tenant):
+        tenant.add(uid(1), "Hosted by Pat", web=THIRD_PERSONAL, scope="hidden")
+        tenant.add(uid(2), "All staff webinar", web=READONLY_SITE, scope="hidden")
+        assert make_source(include_invited=True).get_current_ids() == {uid(1)}
+
+    def test_title_filters_still_apply(self, tenant, db):
+        tenant.add(uid(1), "Hosted by Pat", web=THIRD_PERSONAL, scope="hidden")
+        tenant.add(uid(2), "1:1 with Pat", web=THIRD_PERSONAL, scope="hidden")
+        src = make_source(include_invited=True, exclude_titles=["1:1*"])
+        assert self._ids(src, db) == {uid(1)}
+
+    def test_default_config_is_invited(self):
+        cfg = TranscriptsSource(name="t", sharepoint_source="sp")
+        assert cfg.include_invited is True and cfg.include_all_sites is False
+
+    def test_helpers(self):
+        assert tt._is_teams_site(f"{TEAM}/sites/msteams_8f21aa")
+        assert not tt._is_teams_site(f"{TEAM}/sites/Project")
+        src = make_source()
+        assert src._is_personal(PERSONAL)
+        assert not src._is_personal(f"{TEAM}/personal/x")  # wrong host
+        assert not src._is_personal(f"{MY}/sites/x")
+
+
 # --------------------------------------------------------- incremental behaviour
 def stored(source_id: str, *, version: str, updated: datetime, error: str | None = None):
     return SourceObject(

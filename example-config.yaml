@@ -96,12 +96,14 @@ sources:
   # transcripts:
   #   - name: "teams-transcripts"
   #     sharepoint_source: "my-sharepoint"   # name of the browser-mode source
-  #     # include_own: true                  # recordings in your own OneDrive
-  #     # include_shared: true               # recordings shared with you
-  #     # sites:                             # extra team sites holding recordings
+  #     # include_own: true                  # meetings you organised
+  #     # include_shared: true               # recordings shared directly with you
+  #     # include_invited: true              # every meeting you were invited to (default)
+  #     # include_all_sites: false           # also read-only sites (org-wide webinars)
+  #     # sites:                             # extra sites whose recordings are always included
   #     #   - "https://contoso.sharepoint.com/sites/MyTeam"
   #     # since_days: 365                    # only meetings from the last N days
-  #     # exclude_titles: ["1:1"]            # skip meetings whose title contains these
+  #     # exclude_titles: ["*1:1*"]            # case-insensitive globs on the title
 
   # ──────────────────────────────────────────────────────────
   # Local folders — scan any directories on your filesystem

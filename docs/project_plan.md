@@ -120,6 +120,7 @@
 - [x] Security hardening (cookie host allow-list, KQL escaping, path sanitising)
 - [x] Offline tests (fake tenant) + live dogfood against a real tenant
 - [x] README, example config, CHANGELOG, version 1.1.0
+- [x] v1.2.0: `include_invited` / `include_all_sites` — all invited meetings via tenant-wide security-trimmed search + site-permission filter (live: 1,602 transcripts)
 
 ## Documentation
 - [x] README.md (installation → first sync)

@@ -36,6 +36,9 @@ class FakeTenant:
         self.auth_status: int | None = None
         self.throttle_once: set[str] = set()
         self.cookies_seen: dict[str, set[str]] = {}
+        # Sites (web URLs) where the logged-in user holds "add items" rights.
+        self.contributor_webs: set[str] = set()
+        self.permission_status = 200
 
     def add(
         self,
@@ -105,6 +108,14 @@ class FakeTenant:
             return httpx.Response(200, json={"Email": ME, "LoginName": f"i:0#.f|membership|{ME}"})
         if path.endswith("/GetMyProperties"):
             return httpx.Response(200, json={"PersonalUrl": PERSONAL + "/"})
+        if path.endswith("/_api/web/effectivebasepermissions"):
+            if self.permission_status != 200:
+                return httpx.Response(self.permission_status)
+            web = f"https://{url.host}{path[: -len('/_api/web/effectivebasepermissions')]}"
+            low = 0x2 if web in self.contributor_webs else 0x1
+            return httpx.Response(
+                200, json={"EffectiveBasePermissions": {"Low": str(low), "High": "0"}}
+            )
         if path.endswith("/_api/search/query"):
             return self._search(parse_qs(url.query.decode()))
 
@@ -124,6 +135,10 @@ class FakeTenant:
         elif "SharedWithUsersOWSUSER" in query:
             assert f'"{ME}"' in query
             wanted = [r for r in self.recordings.values() if r["scope"] == "shared"]
+        elif "path:" not in query:
+            # Tenant-wide query: SharePoint Search is security-trimmed, so every
+            # recording the fake user can open is returned.
+            wanted = list(self.recordings.values())
         else:
             m = re.search(r'path:"([^"]+)"', query)
             wanted = [r for r in self.recordings.values() if m and r["web"].startswith(m[1])]
@@ -199,6 +214,9 @@ class FakeTenant:
 
 
 def make_source(**overrides) -> TeamsTranscriptSource:
+    # Most tests exercise one scope at a time, so the tenant-wide "invited" scan
+    # (the production default) is opt-in here.
+    overrides.setdefault("include_invited", False)
     cfg = TranscriptsSource(name="teams", sharepoint_source="sp", **overrides)
     sp = SharePointSource(
         name="sp",

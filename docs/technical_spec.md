@@ -59,6 +59,13 @@ src/workctx/
   `ProgId:Media.Meeting (SharedWithUsersOWSUSER:"<email>" OR …)` (shared) and
   `path:"<site>"` for extra sites. Paged (500/page); `since_days` and
   `exclude_titles` applied client-side. KQL values escaped (`'` → `''`).
+- **Invited scope (v1.2.0)**: the tenant-wide query `ProgId:Media.Meeting` returns
+  everything the account can open (security-trimmed). `_select_invited` keeps hits
+  in other people's OneDrives (`-my` host, `/personal/`), Teams team sites
+  (`/sites/msteams_*`) and sites where `GET {web}/_api/web/effectivebasepermissions`
+  has the AddListItems bit (`Low & 0x2`, i.e. member/owner). Read-only sites need
+  `include_all_sites`. Permission checks raise on 5xx so reconcile never acts on
+  a partial set.
 - **Item API**: `driveId = "b!" + urlsafe_b64(bytes_le(SiteId)+bytes_le(WebId)+bytes_le(ListId))`
   (no padding); base `{SPWebUrl}/_api/v2.1/drives/{driveId}/items/{UniqueId}`,
   falling back to `/_api/v2.1/drive/items/{uid}`.

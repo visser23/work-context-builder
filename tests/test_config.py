@@ -284,6 +284,7 @@ def test_transcripts_source_reusing_sharepoint_login():
     )
     (tx,) = cfg.sources.transcripts
     assert tx.include_own and tx.include_shared
+    assert tx.include_invited and not tx.include_all_sites
     assert tx.sites == [] and tx.since_days is None and tx.exclude_titles == []
     assert "tx" in cfg.all_source_names()
 
