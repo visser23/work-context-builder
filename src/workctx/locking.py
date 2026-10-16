@@ -11,7 +11,13 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-STALE_LOCK_SECONDS = 3600  # 1 hour
+STALE_LOCK_SECONDS = 12 * 3600
+"""A lock whose process is still alive is only broken after this long.
+
+A first sync of a large SharePoint library legitimately runs for hours; with the old
+1-hour limit a second run (daemon check, manual sync) would steal the lock from a
+healthy long-running sync and the two would corrupt each other with "database is
+locked" errors. A *dead* process's lock is always stale regardless of age."""
 
 
 class LockError(Exception):

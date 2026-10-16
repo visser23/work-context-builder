@@ -89,6 +89,13 @@ class SearchIndex:
         self.conn.execute("DELETE FROM fts_index WHERE output_path = ?", (output_path,))
         self.conn.commit()
 
+    def rename(self, old_path: str, new_path: str) -> None:
+        """Re-point an indexed document at a moved corpus file (body is untouched)."""
+        self.conn.execute(
+            "UPDATE fts_index SET output_path = ? WHERE output_path = ?", (new_path, old_path)
+        )
+        self.conn.commit()
+
     def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         """Search the FTS index."""
         fts_query = _sanitise_fts_query(query)

@@ -105,6 +105,8 @@ _TEXT_EXTENSIONS = {
     ".astro",
     ".url",
     ".webloc",
+    ".vtt",  # subtitles / transcripts
+    ".srt",
 }
 
 ALL_CONVERTIBLE_EXTENSIONS = OFFICE_EXTENSIONS | _PDF_EXTENSIONS | _TEXT_EXTENSIONS
@@ -169,6 +171,8 @@ _NEVER_DOWNLOAD_EXTENSIONS = {
     ".one",
     ".onetoc2",
     ".eps",
+    ".emf",  # screenshots/clip-art metafiles: pictures, nothing to read
+    ".wmf",
     ".vsdx",
     ".vsd",
     ".apk",

@@ -127,6 +127,10 @@ def convert_pdf(file_path: Path) -> str | None:
         logger.info(
             "PDF skipped (pre-flight): %s — %s", file_path.name, check.skip_reason,
         )
+        if check.skip_reason.startswith("image-only"):
+            from workctx.normalise.ocr import ocr_pdf
+
+            return ocr_pdf(file_path)
         return None
 
     if check.page_count > 0:

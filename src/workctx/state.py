@@ -10,7 +10,7 @@ from pathlib import Path
 
 from workctx.models import SourceObject, SourceType, SyncCheckpoint
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -65,6 +65,19 @@ MIGRATIONS: dict[int, list[str]] = {
         """
         CREATE INDEX IF NOT EXISTS idx_source_objects_sp_item
         ON source_objects(source_name, sp_item_id)
+        """,
+    ],
+    3: [
+        # Parsed Jira "Details" per issue, keyed by content hash, so the SUMMARY
+        # files never have to re-read thousands of (possibly dataless) files.
+        """
+        CREATE TABLE IF NOT EXISTS jira_details (
+            source_name TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            details TEXT NOT NULL,
+            PRIMARY KEY (source_name, source_id)
+        )
         """,
     ],
 }
@@ -223,9 +236,7 @@ class StateDB:
             self.conn.commit()
         return cursor.lastrowid or 0
 
-    def get_object_by_sp_item_id(
-        self, source_name: str, sp_item_id: int
-    ) -> SourceObject | None:
+    def get_object_by_sp_item_id(self, source_name: str, sp_item_id: int) -> SourceObject | None:
         """Look up a source object by its SharePoint list item ID."""
         with self._lock:
             row = self.conn.execute(
@@ -270,6 +281,56 @@ class StateDB:
                 "UPDATE source_objects SET source_version = ?"
                 " WHERE source_name = ? AND source_id = ?",
                 (source_version, source_name, source_id),
+            )
+            self.conn.commit()
+
+    def update_output_path(self, source_name: str, source_id: str, output_path: str) -> None:
+        """Point an object at a new corpus file (the file itself was moved, not rewritten)."""
+        with self._lock:
+            self.conn.execute(
+                "UPDATE source_objects SET output_path = ? WHERE source_name = ? AND source_id = ?",
+                (output_path, source_name, source_id),
+            )
+            self.conn.commit()
+
+    def reset_stub_retries(self) -> int:
+        """Make every stub (a document we could not convert) eligible for another attempt."""
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE source_objects SET retry_count = 0 "
+                "WHERE last_error LIKE 'stub:%' AND retry_count > 0"
+            )
+            self.conn.commit()
+            return cur.rowcount
+
+    def get_jira_details(self, source_name: str) -> dict[str, tuple[str, dict[str, str]]]:
+        """Return ``{source_id: (content_sha256, details)}`` for cached Jira issues."""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT source_id, content_sha256, details FROM jira_details WHERE source_name = ?",
+                (source_name,),
+            ).fetchall()
+        out: dict[str, tuple[str, dict[str, str]]] = {}
+        for row in rows:
+            try:
+                out[row["source_id"]] = (row["content_sha256"], json.loads(row["details"]))
+            except ValueError:
+                continue  # corrupt row: treated as a cache miss and rewritten
+        return out
+
+    def put_jira_details(
+        self, source_name: str, entries: list[tuple[str, str, dict[str, str]]]
+    ) -> None:
+        """Upsert ``(source_id, content_sha256, details)`` entries in one transaction."""
+        if not entries:
+            return
+        with self._lock:
+            self.conn.executemany(
+                "INSERT INTO jira_details (source_name, source_id, content_sha256, details) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(source_name, source_id) DO UPDATE SET "
+                "content_sha256 = excluded.content_sha256, details = excluded.details",
+                [(source_name, sid, sha, json.dumps(d)) for sid, sha, d in entries],
             )
             self.conn.commit()
 
