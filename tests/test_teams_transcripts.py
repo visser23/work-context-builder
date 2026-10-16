@@ -84,17 +84,31 @@ class TestHelpers:
     def test_get_valid_cookies_uses_cache_then_refreshes(self, monkeypatch):
         import workctx.auth.sharepoint as auth
 
-        monkeypatch.setattr(auth, "load_cookies", lambda ref: {"rtFa": "a", "FedAuth": "b"})
-        monkeypatch.setattr(auth, "_http_test_cookies", lambda url, c: True)
-        assert get_valid_cookies(MY, "p", "ref") == {"rtFa": "a", "FedAuth": "b"}
+        cached = {"rtFa": "a", "FedAuth": "b"}
+        monkeypatch.setattr(auth, "load_cookies", lambda ref: cached)
+        monkeypatch.setattr(auth, "cookie_status", lambda url, c: auth.CookieStatus.VALID)
+        assert get_valid_cookies(MY, "p", "ref") == cached
 
         refreshed = {"rtFa": "new", "FedAuth": "new"}
-        monkeypatch.setattr(auth, "_http_test_cookies", lambda url, c: False)
+        monkeypatch.setattr(auth, "cookie_status", lambda url, c: auth.CookieStatus.REJECTED)
         monkeypatch.setattr(auth, "keepalive_and_extract", lambda *a, **k: refreshed)
         assert get_valid_cookies(MY, "p", "ref") == refreshed
 
         monkeypatch.setattr(auth, "load_cookies", lambda ref: None)
         assert get_valid_cookies(MY, "p", "ref") == refreshed
+
+    def test_unreachable_host_keeps_cached_cookies_without_opening_a_browser(self, monkeypatch):
+        import workctx.auth.sharepoint as auth
+
+        cached = {"rtFa": "a", "FedAuth": "b"}
+        monkeypatch.setattr(auth, "load_cookies", lambda ref: cached)
+        monkeypatch.setattr(auth, "cookie_status", lambda url, c: auth.CookieStatus.UNREACHABLE)
+
+        def boom(*a, **k):
+            raise AssertionError("must not refresh for a network blip")
+
+        monkeypatch.setattr(auth, "keepalive_and_extract", boom)
+        assert get_valid_cookies(MY, "p", "ref") == cached
 
 
 # -------------------------------------------------------------------- validation

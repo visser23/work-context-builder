@@ -46,6 +46,11 @@ def _login_recovery_command(config_path: str, source_name: str) -> str:
     )
 
 
+def _first_line(text: str, limit: int = 200) -> str:
+    line = text.strip().splitlines()[0] if text.strip() else ""
+    return line if len(line) <= limit else f"{line[: limit - 3]}..."
+
+
 class Daemon:
     """Main daemon loop for Work Context Mirror."""
 
@@ -208,14 +213,18 @@ class Daemon:
                 logger.info("Headless refresh recovered SharePoint session for %s", sp.name)
                 continue
             except SessionExpiredError as e:
+                headline = f"SharePoint session expired for '{sp.name}'."
                 reason = str(e).splitlines()[0]
             except Exception as e:
                 logger.warning("Headless refresh crashed for %s: %s", sp.name, e, exc_info=True)
-                reason = f"refresh error: {e}"
+                # SharePoint did reject the stored cookies, but the refresh itself broke —
+                # say so rather than claiming the login is gone for good.
+                headline = f"SharePoint session refresh crashed for '{sp.name}'."
+                reason = f"{type(e).__name__}: {e}"
 
             login_cmd = _login_recovery_command(self.config_path, sp.name)
             msg = (
-                f"SharePoint session expired for '{sp.name}'.\n"
+                f"{headline}\n"
                 f"Automatic refresh failed ({reason}).\n"
                 f"Re-login to capture fresh cookies:\n"
                 f"{login_cmd}"
@@ -244,11 +253,16 @@ class Daemon:
         overall = result.aggregate_status()
         parts = []
         for sr in result.source_results:
-            parts.append(
+            line = (
                 f"  {sr.source_name}: {sr.status.value} "
                 f"(+{sr.objects_added} ~{sr.objects_updated} "
                 f"-{sr.objects_deleted} !{sr.objects_failed})"
             )
+            if sr.status.value != "healthy" and sr.errors:
+                # Say *why*: a connection reset or a locked database is not an expired
+                # login, and the alert must not make it look like one.
+                line += f"\n    cause: {_first_line(sr.errors[0])}"
+            parts.append(line)
 
         summary = "\n".join(parts)
         msg = f"Sync {overall.value}\nRun: {run_id}\n{summary}"

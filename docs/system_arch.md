@@ -66,6 +66,7 @@ src/workctx/
 │                            ├── Schema migrations
 │                            ├── CRUD for source_objects
 │                            ├── Checkpoint management
+│                            ├── jira_details cache (schema v3; Jira SUMMARY)
 │                            └── FTS5 operations (delegated to indexing.py)
 │
 ├── sync.py ─────────────── Orchestration engine
@@ -87,7 +88,11 @@ src/workctx/
 │
 ├── locking.py ──────────── Execution lock
 │                            ├── PID-based lock file
-│                            └── Stale lock detection
+│                            └── Stale lock detection (dead PID, or live PID > 12h)
+│
+├── relayout.py ─────────── One-off/idempotent corpus layout migration (SharePoint)
+│                            ├── Moves files + .part-NNN siblings, updates DB + FTS
+│                            └── Collisions reported; missing files reset for re-fetch
 │
 ├── scheduler.py ─────────── Service management
 │                            ├── macOS launchd (KeepAlive daemon)
@@ -111,7 +116,9 @@ src/workctx/
 │
 ├── normalise/
 │   ├── common.py ────────── Front matter, document splitting, utilities
-│   ├── office.py ────────── MarkItDown: DOCX, PPTX, XLSX, CSV
+│   ├── office.py ────────── MarkItDown: DOCX, PPTX, XLSX, CSV (+ fallback chain)
+│   ├── fallbacks.py ─────── ODF/draw.io readers, slide-text-only PPTX, LibreOffice headless
+│   ├── ocr.py ───────────── Scanned-PDF OCR (macOS Vision / tesseract)
 │   ├── pdf.py ───────────── PyMuPDF4LLM (primary), Docling (fallback)
 │   ├── html.py ──────────── HTML → Markdown
 │   ├── atlassian.py ─────── Confluence storage XML → MD, Jira ADF → MD
@@ -122,7 +129,7 @@ src/workctx/
     ├── confluence.py ────── Confluence Cloud/DC adapter
     ├── jira.py ──────────── Jira Cloud/DC adapter
     ├── sharepoint.py ────── SharePoint local (OneDrive) mode
-    ├── sharepoint_web.py ── SharePoint browser mode (REST API)
+    ├── sharepoint_web.py ── SharePoint browser mode (REST; enumerate-and-diff, retry layer)
     ├── local_folder.py ──── Local filesystem directory scanner
     ├── teams_transcripts.py  Teams meeting transcripts (search + v2.1 media API)
     ├── outlook.py ───────── Mail + calendar adapters (Outlook REST, session token)
@@ -161,7 +168,7 @@ LLM Corpus (in OneDrive):
 │   └── manifest.jsonl
 ├── confluence/<source-name>/<space>/<id>-<slug>.md
 ├── jira/<source-name>/<project>/<ISSUE-KEY>.md
-├── sharepoint/<source-name>/<relative-path>.md
+├── sharepoint/<source-name>/<path-below-server_relative_path>.md   # v1.3.2: no sites/<site>/<library>/ prefix
 ├── transcripts/<source-name>/<year>/<date>-<title>-<id8>.md
 ├── email/<source-name>/<year>/<month>/<date>-<subject>-<id8>.md
 ├── calendar/<source-name>/<year>/<month>/<date>-<title>-<id8>.md

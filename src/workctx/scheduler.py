@@ -98,7 +98,7 @@ def _prepare_local_install(
     logger.info("Installing project into local venv (non-editable)")
     result = subprocess.run(
         [uv, "pip", "install", "--python", str(python_bin),
-         f"{project_dir}[playwright]"],
+         f"{project_dir}[playwright,ocr]"],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
@@ -184,7 +184,7 @@ def _build_service_command(
 
     if direct and not on_cloud:
         tail = [subcommand, "--config", str(config_abs)]
-        return ([direct] + tail, extra_env)
+        return ([direct, *tail], extra_env)
 
     if on_cloud:
         venv_dir = _local_daemon_venv_dir(config)
@@ -202,7 +202,7 @@ def _build_service_command(
                 "Project on cloud storage — using self-contained local install at %s",
                 venv_dir,
             )
-            return ([str(workctx_bin)] + tail, extra_env)
+            return ([str(workctx_bin), *tail], extra_env)
 
         logger.warning(
             "Local install not ready — falling back to uv run with UV_PROJECT_ENVIRONMENT"
@@ -210,8 +210,7 @@ def _build_service_command(
 
     if uv:
         tail = [subcommand, "--config", str(config_abs)]
-        args = [uv, "run", "--project", str(project_dir), "--extra", "playwright",
-                "workctx"] + tail
+        args = [uv, "run", "--project", str(project_dir), "--extra", "playwright", "workctx", *tail]
         if on_cloud:
             local_venv = _local_daemon_venv_dir(config)
             extra_env["UV_PROJECT_ENVIRONMENT"] = str(local_venv)
@@ -224,7 +223,7 @@ def _build_service_command(
             "Service may fail with EDEADLK. Install 'uv' or clone project locally.",
             direct,
         )
-        return ([direct] + tail, extra_env)
+        return ([direct, *tail], extra_env)
 
     raise RuntimeError("Cannot find 'workctx' or 'uv' on PATH. Install the package first.")
 

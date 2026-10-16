@@ -301,3 +301,82 @@ class TestDaemonTriesRefreshBeforeAlerting:
         ):
             d._check_cookie_keepalive()
         notify.assert_called_once()
+
+
+class TestCookieStatusProbe:
+    """Only a 401/403/redirect proves the session is dead - a blip must not look like expiry."""
+
+    @staticmethod
+    def _probe(monkeypatch, outcomes):
+        import httpx
+
+        queue = list(outcomes)
+        monkeypatch.setattr(sp.time, "sleep", lambda _s: None)
+
+        def fake_get(url, **kwargs):
+            outcome = queue.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return httpx.Response(outcome, request=httpx.Request("GET", url))
+
+        monkeypatch.setattr(httpx, "get", fake_get)
+        return sp.cookie_status(SITE, FRESH), queue
+
+    @pytest.mark.parametrize("code", [401, 403, 302])
+    def test_auth_errors_and_redirects_mean_rejected(self, monkeypatch, code):
+        status, _ = self._probe(monkeypatch, [code])
+        assert status is sp.CookieStatus.REJECTED
+
+    def test_ok_means_valid(self, monkeypatch):
+        status, _ = self._probe(monkeypatch, [200])
+        assert status is sp.CookieStatus.VALID
+
+    def test_blip_then_ok_is_valid(self, monkeypatch):
+        import httpx
+
+        status, left = self._probe(monkeypatch, [httpx.ReadError("reset"), 503, 200])
+        assert status is sp.CookieStatus.VALID
+        assert left == []
+
+    def test_persistent_blips_are_unreachable_not_rejected(self, monkeypatch):
+        import httpx
+
+        status, _ = self._probe(monkeypatch, [429, httpx.ConnectError("down"), 502])
+        assert status is sp.CookieStatus.UNREACHABLE
+
+    def test_http_keepalive_only_false_when_rejected(self, monkeypatch):
+        import httpx
+
+        monkeypatch.setattr(sp.time, "sleep", lambda _s: None)
+        monkeypatch.setattr(
+            httpx,
+            "get",
+            lambda url, **k: httpx.Response(503, request=httpx.Request("GET", url)),
+        )
+        assert sp.http_keepalive(SITE, FRESH) is True  # unreachable: not proven dead
+
+        monkeypatch.setattr(
+            httpx,
+            "get",
+            lambda url, **k: httpx.Response(401, request=httpx.Request("GET", url)),
+        )
+        assert sp.http_keepalive(SITE, FRESH) is False
+
+
+class TestDaemonAlertWording:
+    def test_crash_alert_does_not_claim_the_session_expired(self):
+        d = TestDaemonTriesRefreshBeforeAlerting._daemon()
+        with (
+            patch(
+                "workctx.auth.sharepoint.load_cookie_blob",
+                return_value=TestDaemonTriesRefreshBeforeAlerting.BLOB,
+            ),
+            patch("workctx.auth.sharepoint.http_keepalive", return_value=False),
+            patch("workctx.auth.sharepoint.keepalive_and_extract", side_effect=OSError("boom")),
+            patch.object(d, "_notify") as notify,
+        ):
+            d._check_cookie_keepalive()
+        text = notify.call_args[0][0]
+        assert "refresh crashed" in text
+        assert "OSError: boom" in text
+        assert "session expired" not in text.lower()

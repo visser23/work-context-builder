@@ -139,7 +139,7 @@ def test_migration_idempotent(tmp_path):
 
     db2 = StateDB(db_path)
     version = db2.conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert version == 2
+    assert version == 3
     db2.close()
 
 

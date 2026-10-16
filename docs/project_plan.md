@@ -133,6 +133,24 @@
 - [x] 116 new offline tests (fake Outlook/Slack APIs); live dogfood (219 mail, 110 events, 47 Slack digests; idempotent re-run)
 - [x] README, example config, CHANGELOG, version 1.3.0
 
+## Phase 14: SharePoint Completeness & Layout (v1.3.2)
+- [x] Root cause: GetChanges resolve returned HTTP 400 (swallowed) -> all changes dropped
+- [x] Enumerate-and-diff discovery; retry/back-off layer; no deletes on partial listing; mass-delete breaker
+- [x] Tri-state cookie probe; no false "session expired" alerts; real causes in Telegram/doctor
+- [x] Run-lock stale threshold 12h for live PIDs; stub retry cap
+- [x] Short corpus layout + `relayout` migration (with legacy `//` paths)
+- [x] 539 offline tests (fake SharePoint library); live deploy, relayout and sync (see CHANGELOG 1.3.2)
+- [x] OneDrive clean-up: stale `_state` archived out of OneDrive
+- [ ] Human: review/move `working/**/node_modules` and other work folders out of OneDrive (see scratchpad)
+
+## Phase 15: Deltas, Converters, Jira Cache (v1.4.0)
+- [x] Delta audit: edits overwrite in place; multipart grow/shrink/rename/delete leave no orphans (`document_files`); stale twins pruned
+- [x] Sane flattened SharePoint paths verified live (max 293 chars below the Context root)
+- [x] Converters: LibreOffice legacy formats, ODF, draw.io, slide-text-only PPTX, Vision/tesseract OCR; images etc. intentionally skipped
+- [x] Jira SUMMARY cached in SQLite (`jira_details`, schema v3) - no re-read of every issue per sync
+- [x] 585 offline tests; live deploy + sync (111 changes, 0 failed; 15 stubs of 4,112 remain)
+- [ ] Human: move `.venv`/`node_modules`/`.git` dev trees of other projects out of OneDrive (OneDrive CPU root cause)
+
 ## Documentation
 - [x] README.md (installation → first sync)
 - [x] Example configuration file

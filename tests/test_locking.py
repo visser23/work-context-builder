@@ -58,3 +58,27 @@ def test_stale_lock_dead_pid(lock_path):
     lock = ExecutionLock(lock_path)
     lock.acquire()
     lock.release()
+
+
+def test_live_long_running_sync_keeps_its_lock(lock_path):
+    """A first sync of a big library runs for hours; it must not be treated as stale."""
+    started = "2020-01-01T00:00:00+00:00"
+    # Rewind only the age, not the liveness: our own pid is alive.
+    from datetime import UTC, datetime, timedelta
+
+    started = (datetime.now(UTC) - timedelta(hours=5)).isoformat()
+    lock_path.write_text(json.dumps({"pid": os.getpid(), "started_at": started}))
+
+    with pytest.raises(LockError):
+        ExecutionLock(lock_path).acquire()
+
+
+def test_live_but_wedged_lock_is_eventually_broken(lock_path):
+    from datetime import UTC, datetime, timedelta
+
+    started = (datetime.now(UTC) - timedelta(hours=13)).isoformat()
+    lock_path.write_text(json.dumps({"pid": os.getpid(), "started_at": started}))
+
+    lock = ExecutionLock(lock_path)
+    lock.acquire()
+    lock.release()

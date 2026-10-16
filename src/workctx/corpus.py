@@ -10,6 +10,7 @@ import io
 import json
 import logging
 import os
+import posixpath
 import re
 import tempfile
 import time
@@ -214,6 +215,35 @@ def remove_corpus_file(output_root: Path, relative_path: str) -> None:
             break
 
 
+_PART_NAME_RE = re.compile(r"^(?P<stem>.+)\.part-\d{3,}(?P<ext>\.[^./]+)$")
+
+
+def document_files(output_root: Path, stored_path: str) -> list[str]:
+    """Every corpus file that belongs to the document stored at ``stored_path``.
+
+    A document is either one file (``x.pdf.md``) or, when large, a set of
+    ``x.pdf.part-NNN.md`` files (possibly alongside a stale ``x.pdf.md`` left by an older
+    run). ``stored_path`` may name any of them. Names are matched literally (no globbing:
+    document names contain ``[``/``]``), the directory is read once, and a missing
+    directory simply means there is nothing to remove.
+    """
+    norm = posixpath.normpath(stored_path)
+    parent, name = posixpath.split(norm)
+    match = _PART_NAME_RE.match(name)
+    if match:
+        stem, ext = match["stem"], match["ext"]
+    else:
+        stem, ext = os.path.splitext(name)
+    base_name = f"{stem}{ext}"
+    part_re = re.compile(re.escape(stem) + r"\.part-\d{3,}" + re.escape(ext) + "$")
+    try:
+        names = os.listdir(output_root / parent if parent else output_root)
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    found = sorted(n for n in names if n == base_name or part_re.match(n))
+    return [posixpath.join(parent, n) if parent else n for n in found]
+
+
 def build_output_path(
     source_type: SourceType,
     source_name: str,
@@ -271,7 +301,7 @@ def build_output_path(
 
     if source_type == SourceType.SHAREPOINT:
         if relative_source_path:
-            return f"{base}/{relative_source_path}.md"
+            return f"{base}/{relative_source_path.lstrip('/')}.md"
         slug = slugify(title or source_id)
         return f"{base}/{slug}.md"
 
@@ -759,9 +789,20 @@ def generate_jira_summary(config: ProjectConfig, db: StateDB, output_root: Path)
         if not jira_objects:
             continue
 
+        # Only issues whose content changed (or that were never parsed) are read
+        # from disk; everything else comes from the DB cache.  Re-reading every
+        # file used to hydrate thousands of OneDrive placeholders on each sync.
+        cached = db.get_jira_details(jira_cfg.name)
+        fresh: list[tuple[str, str, dict[str, str]]] = []
         rows = []
         for obj in sorted(jira_objects, key=lambda o: o.source_key or o.source_id):
-            details = _extract_jira_details(output_root, obj.output_path)
+            hit = cached.get(obj.source_id)
+            if obj.content_sha256 and hit and hit[0] == obj.content_sha256:
+                details = hit[1]
+            else:
+                details = _extract_jira_details(output_root, obj.output_path)
+                if obj.content_sha256 and details:
+                    fresh.append((obj.source_id, obj.content_sha256, details))
             rows.append(
                 {
                     "Key": obj.source_key or "",
@@ -785,10 +826,18 @@ def generate_jira_summary(config: ProjectConfig, db: StateDB, output_root: Path)
                 }
             )
 
+        db.put_jira_details(jira_cfg.name, fresh)
+
         base_dir = f"jira/{jira_cfg.name}"
         _write_jira_csv(output_root, f"{base_dir}/SUMMARY.csv", rows)
         _write_jira_md(output_root, f"{base_dir}/SUMMARY.md", rows, jira_cfg.name)
-        logger.info("Jira/%s: summary generated (%d issues)", jira_cfg.name, len(rows))
+        logger.info(
+            "Jira/%s: summary generated (%d issues, %d parsed from disk, %d from cache)",
+            jira_cfg.name,
+            len(rows),
+            len(fresh),
+            len(rows) - len(fresh),
+        )
 
 
 _DETAIL_RE = re.compile(r"^- \*\*(.+?)\*\*:\s*(.+)$")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
@@ -15,6 +16,7 @@ from workctx.corpus import (
     MAX_TOTAL_PATH_CHARS,
     build_output_path,
     clamp_output_path,
+    document_files,
     generate_agents_md,
     generate_chatgpt_instructions,
     generate_claude_md,
@@ -92,6 +94,50 @@ def _migrate_long_paths(db: StateDB, idx: SearchIndex, output_root: Path) -> int
     return migrated
 
 
+CONVERTER_REVISION = 2
+"""Bump when document converters gain abilities (OCR, LibreOffice, ODF ...): stubs that
+previously gave up are then retried once, instead of waiting for the file to change."""
+
+
+def _retry_stubs_after_converter_upgrade(config: ProjectConfig, db: StateDB) -> int:
+    marker = config.state_dir / "converter.rev"
+    try:
+        current = int(marker.read_text().strip())
+    except (OSError, ValueError):
+        current = 0
+    if current >= CONVERTER_REVISION:
+        return 0
+    reset = db.reset_stub_retries()
+    marker.write_text(str(CONVERTER_REVISION))
+    if reset:
+        logger.info("Converters upgraded: %d unconverted document(s) will be retried", reset)
+    return reset
+
+
+def _prune_stale_twins(db: StateDB, idx: SearchIndex, output_root: Path) -> int:
+    """Remove single-file copies that sit next to the ``.part-NNN`` files of the same document.
+
+    Older versions left ``x.pdf.md`` behind when a document grew large enough to be split.
+    Idempotent and cheap: only multipart documents are looked at.
+    """
+    rows = db.conn.execute(
+        "SELECT output_path FROM source_objects WHERE output_path LIKE '%.part-001.%'"
+    ).fetchall()
+    removed = 0
+    for row in rows:
+        stored: str = row["output_path"]
+        match = re.match(r"^(?P<stem>.+)\.part-001(?P<ext>\.[^./]+)$", stored)
+        if not match:
+            continue
+        twin = f"{match['stem']}{match['ext']}"
+        if (output_root / twin).is_file():
+            remove_corpus_file(output_root, twin)
+            idx.remove(twin)
+            removed += 1
+            logger.info("Removed stale single-file copy of a split document: %s", twin[-100:])
+    return removed
+
+
 def run_sync(
     config: ProjectConfig,
     *,
@@ -131,6 +177,17 @@ def run_sync(
         idx = SearchIndex(config.state_dir / "state.sqlite")
         output_root = config.output_root_path
         output_root.mkdir(parents=True, exist_ok=True)
+
+        if not dry_run:
+            # Idempotent: renames SharePoint documents written under the old, deeply
+            # nested layout (no download). A no-op once everything is where it belongs.
+            from workctx.relayout import relayout_sharepoint
+
+            relayout_sharepoint(config, db, idx)
+
+        if not dry_run:
+            _prune_stale_twins(db, idx, output_root)
+            _retry_stubs_after_converter_upgrade(config, db)
 
         migrated = _migrate_long_paths(db, idx, output_root)
         if migrated:
@@ -222,8 +279,11 @@ def run_sync(
     return result
 
 
-def run_reconciliation(config: ProjectConfig, *, run_id: str) -> None:
-    """Force reconciliation across all sources to detect deletions."""
+def run_reconciliation(config: ProjectConfig, *, run_id: str, force: bool = False) -> None:
+    """Force reconciliation across all sources to detect deletions.
+
+    ``force`` lifts the mass-deletion safety check for genuine large clean-ups.
+    """
     db = StateDB(config.state_dir / "state.sqlite")
     idx = SearchIndex(config.state_dir / "state.sqlite")
     sources: list[Source] = []
@@ -231,7 +291,7 @@ def run_reconciliation(config: ProjectConfig, *, run_id: str) -> None:
         output_root = config.output_root_path
         sources = _build_sources(config)
         for source in sources:
-            _reconcile_source(source, db, idx, output_root)
+            _reconcile_source(source, db, idx, output_root, force=force)
     finally:
         for source in sources:
             with contextlib.suppress(Exception):
@@ -450,9 +510,6 @@ def _sync_source(
         else:
             cp_value = latest_success_ts or (checkpoint.last_checkpoint if checkpoint else None)
         cp_metadata = dict(checkpoint.metadata) if checkpoint and checkpoint.metadata else {}
-        change_token = getattr(source, "_latest_change_token", None)
-        if change_token and sr.objects_failed == 0:
-            cp_metadata["change_token"] = change_token
 
         new_cp = SyncCheckpoint(
             source_name=source.name,
@@ -559,7 +616,9 @@ def _write_and_index(
             space=space,
             project=project,
             relative_source_path=(
-                change.source_id if source.source_type in file_source_types else None
+                (change.metadata.get("relative_path") or change.source_id)
+                if source.source_type in file_source_types
+                else None
             ),
             occurred_on=change.metadata.get("occurred_on") or change.metadata.get("meeting_date"),
             subpath=change.metadata.get("subpath"),
@@ -609,20 +668,6 @@ def _write_and_index(
 
         parts = split_large_document(fm, body_md, config.sync.large_document_chars, output_path)
 
-        if existing and existing.output_path:
-            if existing.output_path != output_path:
-                remove_corpus_file(output_root, existing.output_path)
-                idx.remove(existing.output_path)
-
-            old_stem = Path(existing.output_path).stem
-            old_parent = Path(existing.output_path).parent
-            old_dir = output_root / old_parent
-            if old_dir.exists():
-                for stale in old_dir.glob(f"{old_stem}.part-*"):
-                    rel = str(stale.relative_to(output_root))
-                    stale.unlink(missing_ok=True)
-                    idx.remove(rel)
-
         for part_fm, part_body, part_path in parts:
             part_content = wrap_with_front_matter(part_fm, part_body)
             write_corpus_file(output_root, part_path, part_content)
@@ -639,6 +684,19 @@ def _write_and_index(
                     change.source_updated_at.isoformat() if change.source_updated_at else None
                 ),
             )
+
+        # The new files are in place; now drop every file of the previous version that is
+        # not part of the new one (old parts, a single-file copy that has become parts or
+        # vice versa, or a previous path after a rename). Never glob: names contain [ ].
+        keep = {part_path for _, _, part_path in parts}
+        stale = set(document_files(output_root, output_path))
+        if existing and existing.output_path:
+            stale.update(document_files(output_root, existing.output_path))
+        for rel in sorted(stale - keep):
+            remove_corpus_file(output_root, rel)
+            idx.remove(rel)
+        if existing and existing.output_path and existing.output_path not in keep:
+            idx.remove(existing.output_path)  # exact stored form (legacy paths had "//")
 
         actual_output = parts[0][2] if parts else output_path
 
@@ -674,15 +732,10 @@ def _handle_delete(
     with _DB_WRITE_LOCK:
         existing = db.get_object(source.name, change.source_id)
         if existing and existing.output_path:
-            remove_corpus_file(output_root, existing.output_path)
-            idx.remove(existing.output_path)
-
-            stem = Path(existing.output_path).stem
-            parent = Path(existing.output_path).parent
-            for part_file in (output_root / parent).glob(f"{stem}.part-*"):
-                rel = str(part_file.relative_to(output_root))
-                part_file.unlink(missing_ok=True)
+            for rel in document_files(output_root, existing.output_path) or [existing.output_path]:
+                remove_corpus_file(output_root, rel)
                 idx.remove(rel)
+            idx.remove(existing.output_path)
 
         db.delete_object(source.name, change.source_id)
 
@@ -691,11 +744,17 @@ def _aware(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
+RECONCILE_MASS_DELETE_MIN = 100
+RECONCILE_MASS_DELETE_RATIO = 0.5
+
+
 def _reconcile_source(
     source: Source,
     db: StateDB,
     idx: SearchIndex,
     output_root: Path,
+    *,
+    force: bool = False,
 ) -> None:
     """Reconcile a source: find and remove deleted objects."""
     if not source.reconcile_supported():
@@ -717,6 +776,22 @@ def _reconcile_source(
         }
         stored_ids -= retained
     deleted_ids = stored_ids - current_ids
+
+    # A listing that "lost" most of what we hold is far more likely a broken listing
+    # than a genuine clean-up; deleting on that evidence is how corpora get wiped.
+    if (
+        len(deleted_ids) >= RECONCILE_MASS_DELETE_MIN
+        and len(deleted_ids) > RECONCILE_MASS_DELETE_RATIO * len(stored_ids)
+        and not force
+    ):
+        logger.error(
+            "Reconciliation for %s refused: %d of %d stored objects look deleted. "
+            "Re-run a full sync/reconcile if that is genuine.",
+            source.name,
+            len(deleted_ids),
+            len(stored_ids),
+        )
+        return
 
     for source_id in deleted_ids:
         logger.info("Reconciliation: deleting %s/%s", source.name, source_id)

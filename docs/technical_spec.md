@@ -57,6 +57,45 @@ normalise/outlook.py # Mail/event Markdown, quoted-reply trimming
 normalise/slack.py   # Slack mrkdwn → Markdown, day digests, version fingerprints
 ```
 
+## SharePoint Browser Mode (reworked v1.3.2)
+
+- **Discovery** (`sharepoint_web.discover_changes`): every run walks the configured
+  library with `GetFolderByServerRelativeUrl(...)/Files|Folders` (concurrent, per-folder
+  paging) and diffs against `source_objects` by `UniqueId` + modified/size version.
+  There is no change feed: `GetChanges` silently lost events and was removed.
+- **Completeness guarantees**: any transport/5xx failure after retries, or an unreadable
+  root, raises `EnumerationIncompleteError` (source FAILED, checkpoint not advanced).
+  403/404 sub-folders are recorded as *inaccessible*; deletions are then skipped.
+  Deletions are also skipped for an empty listing, and refused when >= 100 objects and
+  > 50% of stored would go (override: `sync --full`, `reconcile --force`).
+- **Requests** (`_request`): retries transport errors and 429/500/502/503/504 with
+  exponential back-off (cap 60s, honours `Retry-After`, 5 attempts). 401/3xx/403 are
+  checked with the cookie probe; REJECTED cookies trigger a shared, thread-safe session
+  refresh (max 3 per run) before `SessionExpiredError`.
+- **Cookie probe** (`auth.sharepoint.cookie_status`): `VALID` (200), `REJECTED`
+  (401/403/redirect), `UNREACHABLE` (429/5xx/network, retried). Only REJECTED may trigger
+  a browser refresh or an "expired" alert. Alerts include the real cause.
+- **Stubs**: unconvertible/oversized files are retried up to 3 runs, then only when the
+  file's modified time changes.
+- **Layout**: `sharepoint/<source>/<path relative to server_relative_path>.md`
+  (`change.metadata["relative_path"]`). `workctx relayout [--dry-run]` (also run
+  automatically by `sync`) moves legacy corpora (rename-only; collisions reported;
+  missing files reset for re-fetch; FTS index and DB updated).
+
+## Deltas, Converters, Jira cache (v1.4.0)
+
+- **Overwrite semantics** (`sync._write_and_index`): after writing the new part files, every
+  file listed by `corpus.document_files()` (base + `stem.part-NNN`, literal `listdir`, no
+  globbing) that is not part of the new write is removed with its FTS row. Deletes use the
+  same helper. `_prune_stale_twins` removes single-file twins of split documents each run.
+- **Converters** (`normalise/office.py`, `fallbacks.py`, `ocr.py`): pure-Python ODF/draw.io
+  -> MarkItDown -> LibreOffice headless (`soffice`, serialised) for legacy formats; heavy
+  PPTX -> slide text only; image-only PDFs -> OCR (Vision via `[ocr]` extra, else
+  tesseract), prefixed with `OCR_NOTICE`. Images/video/CAD are never downloaded.
+  `CONVERTER_REVISION` (`state_dir/converter.rev`) resets stub retries after upgrades.
+- **Jira SUMMARY**: `jira_details(source_name, source_id, content_sha256, details)`; only
+  issues whose hash changed are re-parsed from disk.
+
 ## Email, Calendar, Slack (v1.3.0)
 
 - **Auth**: `auth/webtokens.py` opens the persistent Playwright profile headless

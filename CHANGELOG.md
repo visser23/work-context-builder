@@ -3,6 +3,74 @@
 All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.0]
+
+### Fixed
+- **Updated multi-part documents left orphans behind.** Large documents are stored as
+  `name.part-001.md`, `name.part-002.md`, …. On update the old cleanup globbed the stored
+  path (`name.part-001`), which never matched its own siblings, so a document that shrank
+  or was renamed kept dead `part-NNN` files forever (and stale index rows). Cleanup now
+  lists the document's actual files literally (`corpus.document_files`), removes every
+  part that is no longer produced, and handles delete the same way. An edited file always
+  overwrites its original; nothing new is added next to it.
+- Stale single-file twins of documents that are now split are pruned on every run
+  (`_prune_stale_twins`).
+- Files that are now excluded or unconvertible on the server (e.g. `.emf`, `.zip`) have
+  their old stub removed instead of lingering.
+- **Jira SUMMARY re-read every issue file on every sync** (1h20m when OneDrive had
+  evicted the files, all while holding the run lock). Parsed details are now cached in
+  SQLite (`jira_details`, schema v3) keyed by content hash; only changed issues are read.
+
+### Added
+- More documents become searchable text (nothing is converted if it would not make sense
+  as text, e.g. images, video, CAD, binaries):
+  - legacy Office/RTF/WordPerfect/xlsb/ODF-presentation via LibreOffice headless when
+    installed (`.doc .dot .rtf .wpd .xls .xlsb .ppt .pptm .ppsx .potx .odp …`);
+  - pure-Python readers for OpenDocument (`.odt .ods .odp`) and draw.io diagrams;
+  - heavy/oversized `.pptx` fall back to slide text only (images ignored);
+  - scanned/image-only PDFs are OCR'd (macOS Vision via `pip install .[ocr]`, or
+    `tesseract` on PATH); OCR output is labelled as such;
+  - `.vtt`/`.srt` captions are treated as text.
+- Stubs are retried once after a converter upgrade (`CONVERTER_REVISION`).
+
+## [1.3.2]
+
+### Fixed
+- **SharePoint never picked up new or changed files after the first sync.** Change
+  detection used the `GetChanges` feed and resolved each change with a field
+  (`File_x0020_Size`) the tenant rejects (HTTP 400); the error was swallowed, every
+  change was dropped and the delta token advanced anyway. Folders created, renamed or
+  moved on the server (e.g. `4. Remote Care`) therefore never appeared, and
+  edits were never refreshed. Discovery is now a full enumerate-and-diff on every run
+  (about a minute for ~5,000 files), which cannot lose events. Folder renames, moves,
+  restores and files added in bulk are all picked up.
+- A single connection reset / 429 / 5xx no longer fails the whole SharePoint source:
+  every request retries with back-off (honouring `Retry-After`) and downloads retry too.
+  A listing that could not be read completely now *fails the source loudly* instead of
+  returning a partial list (which used to cause mass deletions), and nothing is
+  deleted from an incomplete or implausible listing (>50% of stored files "gone" needs
+  `sync --full` / `reconcile --force`).
+- **"Session expired" false alarms.** A throttled/failed probe was treated as a rejected
+  login, triggering needless browser refreshes and alerts. Cookies are now only judged
+  dead on a 401/403/redirect; transient failures are retried and reported as
+  "unreachable" (no refresh, no alert). Alerts now state the real cause, a crashed
+  refresh is no longer reported as an expired session, and `doctor` says the same.
+  A 401/403/redirect during a sync is now double-checked with the probe before the
+  login is declared dead; otherwise it is retried like any transient fault (previously
+  several worker threads could burn the whole refresh budget on one bad second).
+- A live sync's lock was treated as stale after one hour, so a long first sync could have
+  its lock stolen by the daemon (`database is locked`). Live processes keep the lock for
+  up to 12 hours.
+- Files that fail to convert are retried a few runs (3), then only when they change.
+
+### Changed
+- **Shorter corpus layout:** SharePoint documents now live directly under
+  `sharepoint/<source>/` (previously `sharepoint/<source>/sites/<site>/<library>/<root
+  folder>/...`, which also forced long paths to be clamped into mangled folder names).
+  Existing corpora are migrated automatically on the next sync (rename only, no
+  re-download); preview with `workctx relayout --dry-run`.
+- Sync alerts include the underlying cause per failed source.
+
 ## [1.3.1]
 
 ### Fixed

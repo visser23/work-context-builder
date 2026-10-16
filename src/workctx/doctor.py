@@ -322,31 +322,23 @@ def _check_sharepoint_browser(sp_config, ok, fail, warn) -> None:
     if cookies:
         ok("SharePoint cookies found in Keychain")
 
-        import httpx
+        from workctx.auth.sharepoint import CookieStatus, cookie_status
 
-        cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
         site_url = (sp_config.site_url or "").rstrip("/")
-        try:
-            resp = httpx.get(
-                f"{site_url}/_api/web/title",
-                headers={
-                    "Cookie": cookie_header,
-                    "Accept": "application/json;odata=verbose",
-                },
-                timeout=15.0,
-                follow_redirects=False,
+        status = cookie_status(site_url, cookies)
+        if status is CookieStatus.VALID:
+            ok("SharePoint session valid")
+        elif status is CookieStatus.REJECTED:
+            warn(
+                "SharePoint rejected the stored session (the daemon refreshes it silently; "
+                f"if that fails run: uv run workctx auth login-sharepoint --source "
+                f"{sp_config.name})"
             )
-            if resp.status_code == 200:
-                ok("SharePoint session valid")
-            elif resp.status_code in (401, 403):
-                warn(
-                    f"SharePoint session expired. "
-                    f"Run: uv run workctx auth login-sharepoint --source {sp_config.name}"
-                )
-            else:
-                warn(f"SharePoint returned HTTP {resp.status_code}")
-        except Exception as e:
-            warn(f"SharePoint connectivity check failed: {e}")
+        else:
+            warn(
+                "SharePoint could not be reached (throttled or network problem) — "
+                "this does not mean the login has expired; try again shortly"
+            )
     else:
         warn(
             "No SharePoint cookies — run: "

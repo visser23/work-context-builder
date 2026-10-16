@@ -216,7 +216,12 @@ def doctor(config: str | None, verbose: bool) -> None:
 @main.command()
 @click.option("--config", "-c", type=str, default=None)
 @click.option("--verbose", "-v", is_flag=True)
-def reconcile(config: str | None, verbose: bool) -> None:
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Allow deleting most of a source's objects (normally refused as a likely bad listing)",
+)
+def reconcile(config: str | None, verbose: bool, force: bool) -> None:
     """Force reconciliation of all sources (detect deletions)."""
     from workctx.config import load_config
     from workctx.logging_config import generate_run_id, setup_logging
@@ -226,7 +231,7 @@ def reconcile(config: str | None, verbose: bool) -> None:
     run_id = generate_run_id()
     setup_logging(cfg.state_dir, run_id, verbose=verbose)
     console.print(f"[bold]Reconciliation[/bold] — {cfg.project.name}")
-    run_reconciliation(cfg, run_id=run_id)
+    run_reconciliation(cfg, run_id=run_id, force=force)
     console.print("[green]Reconciliation complete.[/green]")
 
 
@@ -248,6 +253,52 @@ def reindex(config: str | None) -> None:
         console.print(f"[green]Indexed {count} documents.[/green]")
     finally:
         idx.close()
+
+
+@main.command()
+@click.option("--config", "-c", type=str, default=None)
+@click.option("--dry-run", is_flag=True, help="Show what would move without changing anything")
+@click.option("--verbose", "-v", is_flag=True)
+def relayout(config: str | None, dry_run: bool, verbose: bool) -> None:
+    """Move an existing SharePoint corpus into the short on-disk layout (no re-download)."""
+    from workctx.config import load_config
+    from workctx.indexing import SearchIndex
+    from workctx.locking import ExecutionLock, LockError
+    from workctx.logging_config import generate_run_id, setup_logging
+    from workctx.relayout import relayout_sharepoint
+    from workctx.state import StateDB
+
+    cfg = load_config(_find_config(config))
+    setup_logging(cfg.state_dir, generate_run_id(), verbose=verbose)
+    console.print(f"[bold]Relayout[/bold] — {cfg.project.name}")
+    if dry_run:
+        console.print("[yellow]DRY RUN — nothing will be moved[/yellow]")
+
+    lock = ExecutionLock(cfg.state_dir / "run.lock")
+    try:
+        lock.acquire()
+    except LockError as exc:
+        console.print(f"[red]{exc}[/red]")
+        sys.exit(1)
+    db = StateDB(cfg.state_dir / "state.sqlite")
+    idx = SearchIndex(cfg.state_dir / "state.sqlite")
+    try:
+        report = relayout_sharepoint(cfg, db, idx, dry_run=dry_run)
+    finally:
+        idx.close()
+        db.close()
+        lock.release()
+
+    console.print(
+        f"moved={report.moved} already_ok={report.already_ok} "
+        f"re-fetch-later={report.reset} conflicts={len(report.conflicts)}"
+    )
+    for conflict in report.conflicts[:10]:
+        console.print(f"  [yellow]conflict:[/yellow] {conflict}")
+    if dry_run:
+        for old, new in report.planned[:5]:
+            console.print(f"  {old}\n    -> {new}")
+    console.print("Next: run 'workctx sync' (regenerates the manifest and index pages).")
 
 
 @main.group()

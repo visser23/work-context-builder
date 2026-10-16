@@ -17,6 +17,7 @@ import logging
 import platform
 import threading
 import time
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -319,47 +320,106 @@ def load_cookie_blob(secret_ref: str) -> dict[str, Any] | None:
     return None
 
 
-def _http_test_cookies(site_url: str, cookies: dict[str, str]) -> bool:
-    """Validate cookies with a lightweight HTTP request to SharePoint REST API.
+class CookieStatus(StrEnum):
+    """What a probe of the SharePoint REST API says about a set of session cookies."""
 
-    Returns True if the cookies authenticate successfully (HTTP 200).
-    Used internally by keepalive_and_extract to validate before persisting.
+    VALID = "valid"
+    REJECTED = "rejected"  # SharePoint said no: the session is genuinely dead
+    UNREACHABLE = "unreachable"  # throttled / 5xx / network: says nothing about the session
+
+
+PROBE_ATTEMPTS = 3
+PROBE_RETRY_SECONDS = 3.0
+
+
+def cookie_status(
+    site_url: str,
+    cookies: dict[str, str],
+    *,
+    attempts: int = PROBE_ATTEMPTS,
+    retry_delay: float = PROBE_RETRY_SECONDS,
+) -> CookieStatus:
+    """Probe ``/_api/web/title`` and classify the answer.
+
+    Only a 401/403 or a redirect (to the login page) proves the session is dead.
+    Throttling (429), server errors (5xx) and network failures are retried and, if they
+    persist, reported as ``UNREACHABLE`` - never as ``REJECTED`` - so a flaky moment
+    cannot be mistaken for an expired login (and trigger a needless browser refresh or
+    a "please log in again" alert).
     """
     import httpx
 
     cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
-    try:
-        resp = httpx.get(
-            f"{site_url.rstrip('/')}/_api/web/title",
-            headers={
-                "Cookie": cookie_header,
-                "Accept": "application/json;odata=verbose",
-                "User-Agent": _CHROMIUM_UA,
-            },
-            timeout=30,
-            follow_redirects=False,
-        )
-        return resp.status_code == 200
-    except Exception:
-        return False
+    for attempt in range(1, attempts + 1):
+        try:
+            resp = httpx.get(
+                f"{site_url.rstrip('/')}/_api/web/title",
+                headers={
+                    "Cookie": cookie_header,
+                    "Accept": "application/json;odata=verbose",
+                    "User-Agent": _CHROMIUM_UA,
+                },
+                timeout=30,
+                follow_redirects=False,
+            )
+        except httpx.HTTPError as exc:
+            logger.info(
+                "Cookie probe for %s failed (attempt %d/%d): %s",
+                _safe_url(site_url),
+                attempt,
+                attempts,
+                type(exc).__name__,
+            )
+        else:
+            code = resp.status_code
+            if code == 200:
+                return CookieStatus.VALID
+            if code in (401, 403) or 300 <= code < 400:
+                return CookieStatus.REJECTED
+            logger.info(
+                "Cookie probe for %s got HTTP %d (attempt %d/%d)",
+                _safe_url(site_url),
+                code,
+                attempt,
+                attempts,
+            )
+        if attempt < attempts:
+            time.sleep(retry_delay * attempt)
+    return CookieStatus.UNREACHABLE
+
+
+def _http_test_cookies(site_url: str, cookies: dict[str, str]) -> bool:
+    """Strict check: True only if SharePoint positively accepts the cookies.
+
+    Used by ``keepalive_and_extract`` so only provably-good cookies are persisted.
+    """
+    return cookie_status(site_url, cookies) is CookieStatus.VALID
 
 
 def http_keepalive(site_url: str, cookies: dict[str, str]) -> bool:
     """Check whether SharePoint session cookies are still valid.
 
-    Makes a single GET to /_api/web/title. Note: this does NOT extend
+    Makes a GET to /_api/web/title. Note: this does NOT extend
     cookie lifetime — SharePoint session cookies (rtFa/FedAuth) expire
     on a schedule set by the identity provider (ADFS/Entra ID). This
-    function only detects expiry so the daemon can notify the user.
+    function only detects expiry so the daemon can refresh or notify the user.
 
-    Returns True if the session is still valid, False if expired.
+    Returns False only when SharePoint *rejected* the cookies. If SharePoint simply
+    could not be reached (throttling, outage, network blip) the session is not proven
+    dead, so this returns True and the next check will try again.
     """
-    result = _http_test_cookies(site_url, cookies)
-    if result:
+    status = cookie_status(site_url, cookies)
+    if status is CookieStatus.VALID:
         logger.debug("Cookie keepalive OK for %s", site_url)
-    else:
-        logger.info("Cookie keepalive failed for %s", site_url)
-    return result
+        return True
+    if status is CookieStatus.UNREACHABLE:
+        logger.warning(
+            "Cookie keepalive could not reach %s — not treating the session as expired",
+            _safe_url(site_url),
+        )
+        return True
+    logger.info("Cookie keepalive failed for %s", site_url)
+    return False
 
 
 def _extract_sp_cookies(context: BrowserContext, site_url: str) -> dict[str, str]:
@@ -418,15 +478,17 @@ def onedrive_secret_ref(secret_ref: str) -> str:
 def get_valid_cookies(host_url: str, profile_name: str, secret_ref: str) -> dict[str, str]:
     """Return cookies for ``host_url`` that SharePoint currently accepts.
 
-    Tries the credential-store copy first (one cheap HTTP check); on rejection
-    falls back to a headless refresh using the persistent browser profile
-    ``profile_name`` (silent SSO). Raises ``SessionExpiredError`` if a human
-    login is genuinely required.
+    Tries the credential-store copy first (one cheap HTTP check); only when SharePoint
+    *rejects* it does it fall back to a headless refresh using the persistent browser
+    profile ``profile_name`` (silent SSO). A host that is merely unreachable keeps the
+    cached cookies - the caller's own requests will retry. Raises
+    ``SessionExpiredError`` if a human login is genuinely required.
     """
     cached = load_cookies(secret_ref)
-    if cached and _http_test_cookies(host_url, cached):
-        return cached
     if cached:
+        status = cookie_status(host_url, cached)
+        if status is not CookieStatus.REJECTED:
+            return cached
         logger.info("Cached cookies for %s rejected, refreshing via browser", _safe_url(host_url))
     return keepalive_and_extract(host_url, profile_name, secret_ref)
 

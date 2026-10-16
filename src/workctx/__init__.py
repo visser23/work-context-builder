@@ -1,3 +1,3 @@
 """Work Context Mirror — LLM-friendly mirror of work knowledge."""
 
-__version__ = "1.3.1"
+__version__ = "1.4.0"

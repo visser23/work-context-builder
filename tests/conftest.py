@@ -41,6 +41,63 @@ def _httpx_with_client(factory):
 
 
 @pytest.fixture
+def sp_library(monkeypatch):
+    """A fake SharePoint document library wired into ``SharePointWebSource`` (no network)."""
+    from tests.fake_sp_library import FakeLibrary
+    from workctx.sources import sharepoint_web as sw
+
+    fake = FakeLibrary()
+    monkeypatch.setattr(
+        sw,
+        "httpx",
+        _httpx_with_client(
+            lambda **kw: fake_web._REAL_CLIENT(transport=httpx.MockTransport(fake.handler), **kw)
+        ),
+    )
+    monkeypatch.setattr(sw, "load_cookies", lambda ref: {"rtFa": "rt", "FedAuth": "fa"})
+    monkeypatch.setattr(sw, "cookie_status", lambda url, ck, **kw: sw.CookieStatus.VALID)
+    monkeypatch.setattr(sw.time, "sleep", lambda _s: None)
+    return fake
+
+
+@pytest.fixture
+def sp_project(tmp_path):
+    """A project config with one browser-mode SharePoint source ``sp`` (output/state in tmp)."""
+    import yaml
+
+    from tests.fake_sp_library import BASE, SITE
+    from workctx.config import load_config
+
+    output = tmp_path / "out"
+    state = tmp_path / "state"
+    cfg = {
+        "version": 1,
+        "project": {
+            "id": "p",
+            "name": "P",
+            "output_root": str(output),
+            "state_dir": str(state),
+        },
+        "sources": {
+            "sharepoint": [
+                {
+                    "name": "sp",
+                    "site_url": SITE,
+                    "mode": "browser",
+                    "doc_library": "Documents",
+                    "server_relative_path": BASE,
+                    "auth": {"mode": "browser", "secret_ref": "sp-cookies"},
+                }
+            ]
+        },
+        "notifications": {"telegram": {"enabled": False}, "macos": {"enabled": False}},
+    }
+    path = tmp_path / "c.yaml"
+    path.write_text(yaml.dump(cfg))
+    return load_config(path)
+
+
+@pytest.fixture
 def outlook(monkeypatch):
     """A fake Outlook REST API wired into the mail/calendar adapters (no network/browser)."""
     import time as _time

@@ -264,6 +264,7 @@ class TestGenerateJiraSummary:
 
         mock_db = MagicMock()
         mock_db.get_objects_for_source.return_value = [obj]
+        mock_db.get_jira_details.return_value = {}
 
         mock_jira_cfg = MagicMock()
         mock_jira_cfg.name = "test-jira"
@@ -435,7 +436,7 @@ class TestClampOutputPath:
         root.mkdir()
         rel = (
             "sharepoint/src/" + "x" * 200 + "/dir/"
-            "Item 2.3 - HomeTest Integration with Other Diagnostics Programmes.docx.md"
+            "Item 2.3 - Pilot Integration with Other Diagnostics Programmes.docx.md"
         )
         result = clamp_output_path(root, rel)
         full = str(root / result)
@@ -462,3 +463,24 @@ class TestClampOutputPath:
         assert len(full) <= MAX_TOTAL_PATH_CHARS
         assert result.endswith(".pdf.md")
         assert result.startswith("sharepoint/my-sharepoint/")
+
+
+def test_sharepoint_output_path_uses_relative_path_without_leading_slash():
+    from workctx.corpus import build_output_path
+    from workctx.models import SourceType
+
+    path = build_output_path(
+        SourceType.SHAREPOINT,
+        "sp",
+        "/sites/team/Shared Documents/Root/3. Pilot/plan.docx",
+        relative_source_path="3. Pilot/plan.docx",
+    )
+    assert path == "sharepoint/sp/3. Pilot/plan.docx.md"
+
+    legacy = build_output_path(
+        SourceType.SHAREPOINT,
+        "sp",
+        "/sites/t/Docs/a.docx",
+        relative_source_path="/sites/t/Docs/a.docx",
+    )
+    assert legacy == "sharepoint/sp/sites/t/Docs/a.docx.md"
