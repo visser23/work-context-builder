@@ -3,6 +3,16 @@
 All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.2]
+
+### Fixed
+- **A transient filesystem error in the pre-sync housekeeping aborted the whole run.** On a
+  cloud-synced output folder (OneDrive File Provider) `stat` can fail with `EDEADLK` /
+  `EAGAIN` while the provider is busy; pruning stale twins of split documents let that error
+  escape and the run failed before any source was read. Pruning now skips the unreadable path
+  (it is retried next run), and the idempotent housekeeping steps (relayout, twin pruning,
+  long-path migration) are best-effort: a filesystem error is logged as a warning, not fatal.
+
 ## [1.4.1]
 
 ### Fixed
