@@ -150,3 +150,51 @@ class TestManifestUsesResilientWrite:
         db.close()
         data = json.loads((out / "_meta" / "health.json").read_text())
         assert data["status"] == "healthy"
+
+
+class TestWriteCorpusFileRetries:
+    """Per-item writes (the main path) must ride out File Provider hiccups too, including
+    on the *directory* step: ``mkdir`` on a placeholder folder OneDrive has not enumerated
+    yet raises EDEADLK."""
+
+    def test_retries_transient_mkdir_error(self, tmp_path: Path):
+        real_mkdir = Path.mkdir
+        calls = {"n": 0}
+
+        def flaky(self, *a, **kw):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise OSError(errno.EDEADLK, "Resource deadlock avoided")
+            return real_mkdir(self, *a, **kw)
+
+        with (
+            patch.object(Path, "mkdir", flaky),
+            patch("workctx.corpus.time.sleep"),
+        ):
+            target = corpus.write_corpus_file(tmp_path, "a/b/c.md", "hi")
+        assert target.read_text() == "hi"
+        assert calls["n"] >= 3
+
+    def test_retries_transient_replace_error(self, tmp_path: Path):
+        real_replace = os.replace
+        calls = {"n": 0}
+
+        def flaky(src, dst):
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise OSError(errno.EDEADLK, "Resource deadlock avoided")
+            return real_replace(src, dst)
+
+        with (
+            patch("workctx.corpus.os.replace", side_effect=flaky),
+            patch("workctx.corpus.time.sleep"),
+        ):
+            target = corpus.write_corpus_file(tmp_path, "x.md", "ok")
+        assert target.read_text() == "ok"
+        assert calls["n"] == 2
+
+    def test_permanent_error_is_raised_and_leaves_no_temp_file(self, tmp_path: Path):
+        err = OSError(errno.EACCES, "Permission denied")
+        with patch("workctx.corpus.os.replace", side_effect=err), pytest.raises(OSError):
+            corpus.write_corpus_file(tmp_path, "x.md", "no")
+        assert not list(tmp_path.glob(".workctx_*"))

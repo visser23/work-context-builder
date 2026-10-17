@@ -3,6 +3,16 @@
 All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.3]
+
+### Fixed
+- **Per-item writes did not retry transient File Provider errors.** Only the `_meta` files used
+  the retrying writer; documents went through `write_corpus_file`, which failed an item on the
+  first `EDEADLK`. Right after OneDrive was reset or re-linked (everything a placeholder, folders
+  not yet enumerated) `mkdir` on such a folder raised `EDEADLK` and the item was lost for that run.
+  `write_corpus_file` now uses `write_text_atomic`, and the folder creation is inside its retry
+  loop.
+
 ## [1.4.2]
 
 ### Fixed
