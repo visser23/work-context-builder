@@ -136,24 +136,13 @@ def write_corpus_file(
     relative_path: str,
     content: str,
 ) -> Path:
-    """Write content to the corpus atomically (write to temp, then replace)."""
+    """Write content to the corpus atomically (write to temp, then replace).
+
+    Transient File Provider errors (OneDrive ``EDEADLK`` etc.) are retried; see
+    :func:`write_text_atomic`.
+    """
     target = safe_join(output_root, relative_path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(target.parent),
-        prefix=".workctx_",
-        suffix=".tmp",
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(content)
-        os.replace(tmp_path, str(target))
-    except Exception:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_path)
-        raise
-
+    write_text_atomic(target, content)
     return target
 
 
@@ -177,17 +166,21 @@ def write_text_atomic(
     retry loop rides out short provider hiccups. Permanent errors are raised
     immediately.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
     for attempt in range(1, attempts + 1):
-        fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".workctx_", suffix=".tmp")
+        tmp_path: str | None = None
         try:
+            # Inside the retry: mkdir on a placeholder folder the provider has not
+            # enumerated yet raises EDEADLK too.
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".workctx_", suffix=".tmp")
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(text)
             os.replace(tmp_path, str(path))
             return
         except OSError as exc:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_path)
+            if tmp_path:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_path)
             if exc.errno not in _TRANSIENT_WRITE_ERRNOS or attempt == attempts:
                 raise
             logger.warning(
