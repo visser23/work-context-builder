@@ -3,6 +3,22 @@
 All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.1]
+
+### Fixed
+- **Unchanged items were rewritten on every run.** The change check hashed the whole file,
+  including `synced_at` (set to "now"), so the hash never matched the stored one and every item
+  a source returned was written again. Sources that re-emit a window (calendar re-emits its
+  past 365 / next 90 days) therefore rewrote hundreds of identical files per run, which a
+  file-sync client such as OneDrive uploads again each time. `synced_at` is now excluded from
+  the hash, so only items whose content or front matter actually changed are written.
+- An unchanged stub is not rewritten but still counts towards the retry cap, so a file that
+  cannot be converted still gives up after `MAX_STUB_RETRIES`.
+
+### Notes
+- The first run after upgrading rewrites each item a source returns once, because stored hashes
+  from earlier versions included `synced_at`. After that, identical items are left alone.
+
 ## [1.4.0]
 
 ### Fixed

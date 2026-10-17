@@ -284,6 +284,16 @@ class StateDB:
             )
             self.conn.commit()
 
+    def bump_retry(self, source_name: str, source_id: str) -> None:
+        """Count one more failed conversion attempt without rewriting the (identical) stub."""
+        with self._lock:
+            self.conn.execute(
+                "UPDATE source_objects SET retry_count = COALESCE(retry_count, 0) + 1"
+                " WHERE source_name = ? AND source_id = ?",
+                (source_name, source_id),
+            )
+            self.conn.commit()
+
     def update_output_path(self, source_name: str, source_id: str, output_path: str) -> None:
         """Point an object at a new corpus file (the file itself was moved, not rewritten)."""
         with self._lock:

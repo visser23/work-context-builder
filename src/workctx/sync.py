@@ -651,13 +651,20 @@ def _write_and_index(
             synced_at=now,
         )
 
-        full_content = wrap_with_front_matter(fm, body_md)
-        c_hash = content_hash(full_content)
+        # ``synced_at`` is bookkeeping, not content: leaving it in the hash made every item
+        # look changed on every run, so sources that re-emit a window (calendar) rewrote
+        # unchanged files and file-sync clients re-uploaded them.
+        stable_fm = fm.model_copy(update={"synced_at": None})
+        c_hash = content_hash(wrap_with_front_matter(stable_fm, body_md))
 
         existing = db.get_object(source.name, change.source_id)
         if existing and existing.content_sha256 == c_hash:
             if existing.source_version != change.source_version:
                 db.update_version(source.name, change.source_id, change.source_version)
+            if is_stub:
+                # An identical stub is not rewritten, but the attempt still counts towards
+                # the retry cap (otherwise a file that cannot be converted retries forever).
+                db.bump_retry(source.name, change.source_id)
             logger.debug(
                 "%s/%s: %s → unchanged",
                 source.source_type.value,
