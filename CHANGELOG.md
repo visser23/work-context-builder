@@ -3,6 +3,19 @@
 All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.4]
+
+### Fixed
+- **Daemon could not touch cloud-only OneDrive/iCloud files or folders (`EDEADLK`, "Resource
+  deadlock avoided").** Root cause: a process started by `launchd` has the macOS per-process I/O
+  policy `IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES` set to *off*, so any `stat`/`listdir`/`mkdir`/
+  `open` on a dataless placeholder fails at once instead of waiting for the File Provider. It
+  stayed hidden while everything in the output folder was already downloaded, and surfaced after a
+  OneDrive reset made nearly every file and folder a placeholder. The same path worked from a
+  shell because user shells have the policy on. `run_sync` now switches it on for the process
+  (`workctx.macos_fs.enable_dataless_materialization`, `setiopolicy_np`); no-op off macOS and
+  never raises. The retries added in 1.4.2/1.4.3 stay as a safety net for genuine hiccups.
+
 ## [1.4.3]
 
 ### Fixed

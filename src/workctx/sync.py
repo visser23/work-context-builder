@@ -32,6 +32,7 @@ from workctx.corpus import (
 )
 from workctx.indexing import SearchIndex
 from workctx.locking import ExecutionLock, LockError
+from workctx.macos_fs import enable_dataless_materialization
 from workctx.models import (
     ChangeAction,
     DiscoveredChange,
@@ -175,6 +176,8 @@ def run_sync(
         run_id=run_id,
         started_at=datetime.now(UTC),
     )
+
+    enable_dataless_materialization()  # no-op off macOS; see macos_fs
 
     lock = ExecutionLock(config.state_dir / "run.lock")
     try:
