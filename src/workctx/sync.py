@@ -130,12 +130,30 @@ def _prune_stale_twins(db: StateDB, idx: SearchIndex, output_root: Path) -> int:
         if not match:
             continue
         twin = f"{match['stem']}{match['ext']}"
-        if (output_root / twin).is_file():
+        try:
+            if not (output_root / twin).is_file():
+                continue
             remove_corpus_file(output_root, twin)
-            idx.remove(twin)
-            removed += 1
-            logger.info("Removed stale single-file copy of a split document: %s", twin[-100:])
+        except OSError as exc:
+            # A cloud-synced folder answers some calls with EDEADLK/EAGAIN while it is busy.
+            # Pruning is idempotent, so leave this one for the next run.
+            logger.warning("Could not prune %s (%s); will retry next run", twin[-100:], exc)
+            continue
+        idx.remove(twin)
+        removed += 1
+        logger.info("Removed stale single-file copy of a split document: %s", twin[-100:])
     return removed
+
+
+def _best_effort(label: str, func, *args):
+    """Run an idempotent housekeeping step; a filesystem error must not abort the sync."""
+    try:
+        return func(*args)
+    except OSError as exc:
+        logger.warning(
+            "Housekeeping step '%s' skipped (%s); it will run again next time", label, exc
+        )
+        return None
 
 
 def run_sync(
@@ -183,13 +201,13 @@ def run_sync(
             # nested layout (no download). A no-op once everything is where it belongs.
             from workctx.relayout import relayout_sharepoint
 
-            relayout_sharepoint(config, db, idx)
+            _best_effort("relayout", relayout_sharepoint, config, db, idx)
 
         if not dry_run:
-            _prune_stale_twins(db, idx, output_root)
+            _best_effort("prune twins", _prune_stale_twins, db, idx, output_root)
             _retry_stubs_after_converter_upgrade(config, db)
 
-        migrated = _migrate_long_paths(db, idx, output_root)
+        migrated = _best_effort("long paths", _migrate_long_paths, db, idx, output_root)
         if migrated:
             logger.info(
                 "Migrated %d files exceeding %d-char path limit",
