@@ -29,6 +29,19 @@ POLL_INTERVAL_SECONDS = 10
 LOOP_SLEEP_SECONDS = 30
 COOKIE_KEEPALIVE_HOURS = 4
 NOTIFICATION_DEDUP_HOURS = 6
+MIN_RETRY_DELAY_MINUTES = 30
+MAX_RETRY_DELAY_MINUTES = 6 * 60
+
+
+def retry_delay(consecutive_failures: int) -> int:
+    """Minutes to wait before the next automatic attempt.
+
+    30 min after the first failure, then doubling (60, 120, ...) up to 6 h, so a source that
+    is persistently broken (expired login, outage) is not re-run, and its output re-synced,
+    every half hour.
+    """
+    exponent = max(0, consecutive_failures - 1)
+    return min(MIN_RETRY_DELAY_MINUTES << exponent, MAX_RETRY_DELAY_MINUTES)
 
 
 def _login_recovery_command(config_path: str, source_name: str) -> str:
@@ -61,6 +74,7 @@ class Daemon:
         self._syncing = False
         self._sync_lock = threading.Lock()
         self._last_sync_attempt: datetime | None = None
+        self._consecutive_failures = 0
         self._last_cookie_keepalive: datetime | None = None
         self._notified_messages: dict[str, datetime] = {}
 
@@ -158,7 +172,7 @@ class Daemon:
 
         if self._last_sync_attempt:
             mins_since_attempt = (now - self._last_sync_attempt).total_seconds() / 60
-            if mins_since_attempt < 30:
+            if mins_since_attempt < retry_delay(self._consecutive_failures):
                 return
 
         logger.info("Daily sync is due — triggering")
@@ -247,6 +261,7 @@ class Daemon:
         except Exception as e:
             msg = f"Sync failed: {e}"
             logger.error(msg, exc_info=True)
+            self._consecutive_failures += 1
             self._notify(f"Sync FAILED\nRun: {run_id}\nError: {e}")
             return msg
 
@@ -269,8 +284,15 @@ class Daemon:
         logger.info("Sync completed: %s", overall.value)
 
         if overall.value != "healthy":
+            self._consecutive_failures += 1
+            logger.info(
+                "Run not healthy (%d in a row); next automatic retry in >= %d min",
+                self._consecutive_failures,
+                retry_delay(self._consecutive_failures),
+            )
             self._notify(msg)
         else:
+            self._consecutive_failures = 0
             logger.info("Sync healthy — no notification needed")
 
         return msg
