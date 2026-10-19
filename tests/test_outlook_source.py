@@ -269,3 +269,36 @@ def test_client_retries_read_timeouts(outlook):
     outlook.timeout_once = 99
     with pytest.raises(httpx.ReadTimeout):
         client.get("/me")
+
+
+def test_client_retries_a_truncated_json_body(outlook, monkeypatch):
+    """A 200 whose body is cut off mid-JSON is transient (seen live: 'Expecting , delimiter')."""
+    from workctx.sources import outlook as ol
+
+    monkeypatch.setattr(ol.time, "sleep", lambda s: None)
+    outlook.garble_once = 3
+    client = OutlookClient(profile="p", mailbox_url="https://x", api_base=API)
+    assert client.get_json("/me")["DisplayName"] == "Bob Example"
+    assert len(outlook.requests) == 4
+
+
+def test_client_reports_persistently_malformed_json_clearly(outlook, monkeypatch):
+    from workctx.sources import outlook as ol
+
+    monkeypatch.setattr(ol.time, "sleep", lambda s: None)
+    outlook.garble_once = 99
+    client = OutlookClient(profile="p", mailbox_url="https://x", api_base=API)
+    with pytest.raises(RuntimeError, match=r"/me returned malformed JSON"):
+        client.get_json("/me")
+    assert len(outlook.requests) == ol.MAX_JSON_RETRIES
+
+
+def test_truncated_page_mid_listing_does_not_fail_the_mail_source(outlook, db, monkeypatch):
+    from workctx.sources import outlook as ol
+
+    monkeypatch.setattr(ol.time, "sleep", lambda s: None)
+    for i in range(3):
+        outlook.add_message(f"m{i}", f"Subject {i}", days_ago(i + 1))
+    outlook.garble_once = 1
+    changes = MailAdapter(mail_cfg()).discover_changes(db, None)
+    assert len(changes) == 3

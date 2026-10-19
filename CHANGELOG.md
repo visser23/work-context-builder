@@ -3,6 +3,25 @@
 All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.5]
+
+### Fixed
+- **A truncated Outlook response failed the whole mail source.** A 200 whose JSON body was cut
+  off mid-document (`Expecting ',' delimiter: line 1 column 33035`) escaped the client's retry
+  logic, which only covered transport errors and 429/503/504. `OutlookClient.get_json` now
+  re-fetches (shared back-off, up to `MAX_JSON_RETRIES`) and only then raises a clear
+  "malformed JSON" error naming the endpoint and the byte count.
+- **Idle runs re-uploaded ~20 MB through OneDrive.** Every run rewrote the manifest
+  (`_meta/manifest.jsonl`, ~19 MB), `PROJECT_BRIEF.md`, the Jira `SUMMARY.*` files and the
+  instruction files even when nothing had changed, so a sync client uploaded them all again.
+  They are now written through `write_text_if_changed`, which leaves an identical file alone.
+  Only the exact "generated at" stamp lines are ignored when comparing (`Last updated:`,
+  `Auto-generated on`, `N issues as of`); a date anywhere else is real content. `INDEX.md` and
+  `health.json` (a few hundred bytes, deliberate liveness signals) are still rewritten.
+- **A failed run was retried every 30 minutes, indefinitely.** Each retry re-walked every source
+  and regenerated the corpus. The retry delay now doubles per consecutive failure (30 min, 1 h,
+  2 h ... capped at 6 h) and resets after a healthy run.
+
 ## [1.4.4]
 
 ### Fixed

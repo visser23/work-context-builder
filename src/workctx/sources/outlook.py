@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 REQUEST_TIMEOUT = 60.0
 PAGE_SIZE = 200
 MAX_RETRIES = 8
+MAX_JSON_RETRIES = 4
 MAX_RETRY_WAIT_SECONDS = 60.0
 WELL_KNOWN_FOLDERS = {
     "inbox": "Inbox",
@@ -168,14 +169,39 @@ class OutlookClient:
         return resp
 
     def get_json(self, path_or_url: str, params: dict[str, str] | None = None) -> dict[str, Any]:
-        resp = self.get(path_or_url, params)
-        if resp.status_code != 200:
-            raise RuntimeError(
-                f"Outlook API {urlparse(str(resp.url)).path} failed: HTTP {resp.status_code} "
-                f"{resp.text[:200]}"
-            )
-        data = resp.json()
-        return data if isinstance(data, dict) else {}
+        """GET and decode a JSON object, re-fetching if the body arrives truncated.
+
+        A 200 whose body is cut off mid-document (``JSONDecodeError: Expecting ',' delimiter``)
+        was seen live on a large mail page; the next request succeeded. It is as transient as a
+        read timeout, so it gets the same shared back-off instead of failing the whole source.
+        """
+        for attempt in range(1, MAX_JSON_RETRIES + 1):
+            resp = self.get(path_or_url, params)
+            path = urlparse(str(resp.url)).path
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"Outlook API {path} failed: HTTP {resp.status_code} {resp.text[:200]}"
+                )
+            try:
+                data = resp.json()
+            except ValueError as exc:  # json.JSONDecodeError and UnicodeDecodeError
+                if attempt == MAX_JSON_RETRIES:
+                    raise RuntimeError(
+                        f"Outlook API {path} returned malformed JSON {attempt} times in a row "
+                        f"({len(resp.content)} bytes, last error: {exc})"
+                    ) from exc
+                wait = min(2.0**attempt, MAX_RETRY_WAIT_SECONDS)
+                logger.warning(
+                    "Outlook API %s returned malformed JSON (%d bytes: %s), retrying in %.0fs",
+                    path,
+                    len(resp.content),
+                    exc,
+                    wait,
+                )
+                self._pause_until = max(self._pause_until, time.monotonic() + wait)
+                continue
+            return data if isinstance(data, dict) else {}
+        raise AssertionError("unreachable")  # pragma: no cover
 
     def pages(
         self, path: str, params: dict[str, str], *, max_items: int | None = None

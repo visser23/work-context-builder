@@ -46,6 +46,7 @@ class FakeOutlook:
         self.unauthorised_once = 0
         self.throttle_once = 0
         self.timeout_once = 0
+        self.garble_once = 0  # answer 200 with a truncated JSON body this many times
         self.attachments: dict[str, list[dict[str, Any]]] = {}
         self.fail_attachments = False
 
@@ -153,6 +154,13 @@ class FakeOutlook:
         if self.throttle_once:
             self.throttle_once -= 1
             return httpx.Response(429, headers={"Retry-After": "0"})
+        if self.garble_once:
+            self.garble_once -= 1
+            return httpx.Response(
+                200,
+                content=b'{"value": [{"Id": "a", "Subject": "cut off mid-str',
+                headers={"Content-Type": "application/json"},
+            )
         path = unquote(request.url.path).removeprefix("/api/v2.0")
         query = parse_qs(request.url.query.decode())
         if path == "/me":
