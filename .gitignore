@@ -39,3 +39,17 @@ tmp/
 # Real project configs (contain instance-specific settings)
 workctx.yaml
 *.workctx.yaml
+
+# Internal planning / working notes (kept locally, not part of the open-source repo)
+docs/
+
+# Editor / AI-assistant local state
+.cursor/
+.claude/
+.idea/
+.vscode/
+
+# Local backups and scratch
+*.bak
+*.bak-*
+*.orig

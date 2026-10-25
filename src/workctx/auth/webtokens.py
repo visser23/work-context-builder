@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from workctx.auth.sharepoint import _BROWSER_LOCK, _CHROMIUM_UA, get_profile_dir, relogin_hint
+from workctx.browsers import configure_browsers_path, ensure_chromium
 
 logger = logging.getLogger(__name__)
 
@@ -275,7 +276,9 @@ def _run_in_browser[T](
             f"No browser profile found for '{profile}'. Run: {relogin_hint(profile)}"
         )
 
+    configure_browsers_path()  # before the driver starts: never run from a cache dir
     with _BROWSER_LOCK, sync_playwright() as p:
+        ensure_chromium(p)
         context = _launch_context(p, profile_dir, headless)
         try:
             page = context.new_page()

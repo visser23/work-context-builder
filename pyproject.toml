@@ -4,7 +4,7 @@ version = "1.4.5"
 description = "Sync Confluence, Jira, SharePoint, and local files into an LLM-friendly Markdown knowledge base"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 authors = [{ name = "Matt Visser" }]
 
 dependencies = [

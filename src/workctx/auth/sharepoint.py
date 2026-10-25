@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import logging
-import platform
 import threading
 import time
 from enum import StrEnum
@@ -22,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from workctx.browsers import app_data_dir, configure_browsers_path, ensure_chromium
 from workctx.secrets import get_secret, set_secret
 
 if TYPE_CHECKING:
@@ -46,14 +46,7 @@ _BROWSER_LOCK = threading.Lock()
 
 def _profiles_dir() -> Path:
     """Platform-specific browser profile storage."""
-    system = platform.system()
-    if system == "Darwin":
-        base = Path.home() / "Library" / "Application Support" / "WorkContextMirror"
-    elif system == "Windows":
-        base = Path.home() / "AppData" / "Local" / "WorkContextMirror"
-    else:
-        base = Path.home() / ".local" / "share" / "workctx"
-    return base / "browser-profiles"
+    return app_data_dir() / "browser-profiles"
 
 
 def get_profile_dir(source_name: str) -> Path:
@@ -89,7 +82,9 @@ def interactive_login(
     cookies: dict[str, str] = {}
     last_url = ""
 
+    configure_browsers_path()  # before the driver starts: never run from a cache dir
     with sync_playwright() as p:
+        ensure_chromium(p)
         context = p.chromium.launch_persistent_context(
             user_data_dir=str(profile_dir),
             headless=headless,
@@ -178,7 +173,9 @@ def keepalive_and_extract(
     last_url = ""
 
     # One browser per profile at a time (daemon keepalive vs. sync vs. Telegram /sync).
+    configure_browsers_path()  # before the driver starts: never run from a cache dir
     with _BROWSER_LOCK, sync_playwright() as p:
+        ensure_chromium(p)
         context = p.chromium.launch_persistent_context(
             user_data_dir=str(profile_dir),
             headless=True,

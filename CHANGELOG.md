@@ -71,6 +71,22 @@ All notable changes to this project are documented here. The project follows
 - The first run after upgrading rewrites each item a source returns once, because stored hashes
   from earlier versions included `synced_at`. After that, identical items are left alone.
 
+## [Unreleased]
+
+### Fixed
+- **Fresh installs failed on Python 3.14**: `onnxruntime` (via `markitdown`/`magika`) has no 3.14
+  wheels. `requires-python` is now `>=3.12,<3.14`, so `uv` picks a supported interpreter
+  automatically.
+- **Clearing OS caches broke every browser refresh.** Playwright downloads Chromium to
+  `~/Library/Caches/ms-playwright` (`~/.cache` on Linux), which cache cleaners delete; the
+  daemon then failed with "Executable doesn't exist" on every SharePoint / Outlook / Slack
+  session refresh. Chromium now lives in a persistent folder
+  (`<app data>/WorkContextMirror/ms-playwright`): `workctx.browsers` pins
+  `PLAYWRIGHT_BROWSERS_PATH` (an explicit value inside a `Caches`/`.cache` dir is overridden),
+  re-installs Chromium automatically if it is missing at launch, `install-service` installs it
+  there and passes the variable to launchd/systemd/Task Scheduler and `workctx-relogin`, and
+  `doctor` reports whether Chromium is present.
+
 ## [1.4.0]
 
 ### Fixed

@@ -24,7 +24,7 @@ Local files ─┘
                    Telegram: /sync /status
 ```
 
-**Platforms:** macOS, Windows, Linux &nbsp;|&nbsp; **Requires:** Python 3.12+
+**Platforms:** macOS, Windows, Linux &nbsp;|&nbsp; **Requires:** Python 3.12 or 3.13
 
 ---
 
@@ -92,7 +92,7 @@ cd work-context-builder
 
 ### Option B: Manual
 
-You need Python 3.12+ and [uv](https://docs.astral.sh/uv/) (a fast Python package manager).
+You need Python 3.12 or 3.13 (uv fetches one automatically if yours is newer) and [uv](https://docs.astral.sh/uv/) (a fast Python package manager).
 
 **Install uv** (if you don't have it):
 
@@ -122,6 +122,11 @@ Chromium. The daemon uses Playwright to refresh session cookies automatically:
 uv sync --extra playwright
 uv run playwright install chromium
 ```
+
+> **Chromium location:** workctx keeps Playwright's Chromium in
+> `~/Library/Application Support/WorkContextMirror/ms-playwright` (not the default
+> `~/Library/Caches/ms-playwright`), so clearing caches cannot break the daemon. If it is ever
+> missing it is re-downloaded automatically at the next browser use.
 
 > **Note:** The background daemon service also needs Playwright. When you run
 > `uv run workctx install-service`, it now automatically includes `--extra playwright`
@@ -858,6 +863,7 @@ to each source, and reports exactly what's wrong.
 | Teams transcripts sync finds nothing | Check the meeting was recorded **with transcription**, that `sharepoint_source` points at a logged-in browser-mode source, and run `uv run workctx doctor --verbose` (it probes both SharePoint hosts). Recordings in a departed colleague's locked OneDrive are skipped quietly (HTTP 423) |
 | Email / calendar / Slack: `No Outlook session` / `No Slack session` | The browser profile is signed out and silent SSO could not finish (password/MFA needed). Run `uv run workctx auth login-web --source <name>`, finish signing in, then sync again. For Slack set `signin_url` to your workspace's own sign-in page (e.g. `https://my-org.enterprise.slack.com/`) so it can sign back in by itself |
 | Slack shows a browser-not-supported page / nothing is found | Update Playwright's Chromium (`uv run playwright install chromium`). On Enterprise Grid make sure `client_url` is the URL you use in your browser; the org-level token cannot read messages, so the tool reads each workspace you belong to |
+| `Executable doesn't exist at .../ms-playwright/...` | Chromium was deleted (e.g. by a cache cleaner). It is re-installed automatically on the next refresh; or run `uv run playwright install chromium`. `uv run workctx doctor` shows the expected location |
 | `Playwright not installed` | Run `uv sync --extra playwright && uv run playwright install chromium` |
 | `Lock file stale` | Another sync crashed. Delete `run.lock` from the state directory |
 | `Daemon not running` | Run `uv run workctx service-status`, then `uv run workctx install-service` to reinstall |
@@ -911,7 +917,7 @@ uv run ruff check src/ tests/   # lint
 uv run ruff format src/ tests/  # format
 ```
 
-Contributions welcome. The architecture is documented in `docs/`.
+Contributions welcome. Please open an issue or pull request.
 
 ---
 

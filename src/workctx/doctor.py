@@ -299,12 +299,29 @@ def _check_confluence_connection(conf_config, secret: str, ok, fail, warn) -> No
     fail("Confluence authentication failed — check token and base URL")
 
 
+def _check_chromium(ok, warn) -> None:
+    """Chromium must exist (its location is pinned outside any cache dir)."""
+    from workctx.browsers import chromium_executable
+
+    exe = chromium_executable()
+    if exe is None:
+        warn("Could not determine the Playwright Chromium location")
+    elif not exe.exists():
+        warn(
+            f"Chromium missing at {exe} — it is re-installed automatically on the next "
+            "browser use, or run: playwright install chromium"
+        )
+    else:
+        ok(f"Chromium installed: {exe}")
+
+
 def _check_sharepoint_browser(sp_config, ok, fail, warn) -> None:
     """Test SharePoint browser-mode connectivity."""
     try:
         from playwright.sync_api import sync_playwright  # noqa: F401
 
         ok("Playwright available")
+        _check_chromium(ok, warn)
     except ImportError:
         fail(
             "Playwright not installed. Run: "
