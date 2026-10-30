@@ -303,6 +303,31 @@ class StateDB:
             )
             self.conn.commit()
 
+    def mark_for_refetch(self, source_name: str, source_ids: list[str]) -> int:
+        """Make sources treat these objects as never synced, so their files are rebuilt.
+
+        Clears ``source_version`` (adapters skip a row whose version still matches),
+        ``content_sha256`` (the writer skips a file whose hash still matches) and the retry
+        count, and flags ``last_error`` (mail/calendar/Slack/transcripts skip only rows
+        without an error). The row itself is kept: it still owns its output path.
+        """
+        from workctx.drift import MISSING_OUTPUT_ERROR
+
+        total = 0
+        with self._lock:
+            for start in range(0, len(source_ids), 500):  # stay below SQLite's variable limit
+                chunk = source_ids[start : start + 500]
+                marks = ",".join("?" * len(chunk))
+                cur = self.conn.execute(
+                    "UPDATE source_objects SET source_version = NULL, content_sha256 = NULL,"
+                    " last_error = ?, retry_count = 0"
+                    f" WHERE source_name = ? AND source_id IN ({marks})",
+                    [MISSING_OUTPUT_ERROR, source_name, *chunk],
+                )
+                total += cur.rowcount
+            self.conn.commit()
+        return total
+
     def reset_stub_retries(self) -> int:
         """Make every stub (a document we could not convert) eligible for another attempt."""
         with self._lock:

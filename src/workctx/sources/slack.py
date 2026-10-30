@@ -182,6 +182,8 @@ class _Conversation:
 class SlackAdapter(Source):
     """Slack conversations as per-day Markdown digests."""
 
+    refetch_needs_full = True  # incremental discovery; see Source.refetch_needs_full
+
     def __init__(
         self,
         config: SlackSource,

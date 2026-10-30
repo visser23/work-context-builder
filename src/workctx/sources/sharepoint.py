@@ -40,6 +40,8 @@ def _strip_glob_prefix(pattern: str) -> str:
 class SharePointLocalSource(Source):
     """SharePoint via OneDrive local sync (onedrive_local mode)."""
 
+    refetch_needs_full = True  # incremental discovery; see Source.refetch_needs_full
+
     def __init__(self, config: SharePointSource) -> None:
         self.config = config
         self._local_path = Path(config.local_path) if config.local_path else None

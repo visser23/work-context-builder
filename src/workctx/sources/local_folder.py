@@ -40,6 +40,8 @@ _SELF_MARKERS = {
 class LocalFolderAdapter(Source):
     """Scans local filesystem folders and their subfolders."""
 
+    refetch_needs_full = True  # incremental discovery; see Source.refetch_needs_full
+
     def __init__(
         self,
         config: LocalFolderSource,

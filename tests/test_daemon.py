@@ -142,3 +142,65 @@ class TestRetryBackoff:
         ):
             daemon._do_sync()
         assert daemon._consecutive_failures == 1
+
+
+class TestDriftCheck:
+    """Files vanishing from the output folder must start a repair sync without waiting a day."""
+
+    def _daemon(self):
+        d = _make_daemon()
+        d.config.state_dir = MagicMock()
+        d.trigger_sync = MagicMock(return_value="ok")
+        return d
+
+    def test_missing_files_trigger_a_repair_sync(self):
+        d = self._daemon()
+        with (
+            patch("workctx.daemon.StateDB"),
+            patch("workctx.daemon.drift_report", return_value={"a": (10, 4), "b": (5, 0)}),
+        ):
+            d._check_drift()
+        d.trigger_sync.assert_called_once_with(source="drift-repair")
+
+    def test_no_missing_files_no_sync(self):
+        d = self._daemon()
+        with (
+            patch("workctx.daemon.StateDB"),
+            patch("workctx.daemon.drift_report", return_value={"a": (10, 0)}),
+        ):
+            d._check_drift()
+        d.trigger_sync.assert_not_called()
+
+    def test_checked_at_most_every_few_hours(self):
+        d = self._daemon()
+        with (
+            patch("workctx.daemon.StateDB"),
+            patch("workctx.daemon.drift_report", return_value={"a": (10, 4)}) as report,
+        ):
+            d._check_drift()
+            d._check_drift()
+        assert report.call_count == 1
+
+    def test_skipped_while_a_sync_is_running(self):
+        d = self._daemon()
+        d._syncing = True
+        with patch("workctx.daemon.drift_report") as report:
+            d._check_drift()
+        report.assert_not_called()
+
+    def test_failures_back_off_like_other_automatic_syncs(self):
+        d = self._daemon()
+        d._consecutive_failures = 3
+        d._last_sync_attempt = datetime.now(UTC) - timedelta(minutes=5)
+        with (
+            patch("workctx.daemon.StateDB"),
+            patch("workctx.daemon.drift_report", return_value={"a": (10, 4)}),
+        ):
+            d._check_drift()
+        d.trigger_sync.assert_not_called()
+
+    def test_a_broken_check_never_stops_the_daemon(self):
+        d = self._daemon()
+        with patch("workctx.daemon.StateDB", side_effect=OSError("db busy")):
+            d._check_drift()  # must not raise
+        d.trigger_sync.assert_not_called()

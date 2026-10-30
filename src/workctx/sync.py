@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 
+from workctx import drift
 from workctx.config import ProjectConfig
 from workctx.corpus import (
     MAX_TOTAL_PATH_CHARS,
@@ -397,6 +398,13 @@ def _sync_source(
     try:
         checkpoint = db.get_checkpoint(source.name)
         should_reconcile = _should_reconcile(checkpoint, config.sync.reconciliation_days)
+
+        # The state DB can outlive the files it describes (cloud folder reset, deletions).
+        # Mark such documents so discovery below re-fetches them; sources that only look
+        # at "what changed since the checkpoint" additionally need a full listing.
+        drifted = drift.repair_drift(source.name, db, output_root, dry_run=dry_run)
+        if drifted and source.refetch_needs_full:
+            full = True
 
         if progress:
             progress.begin_discovery(source.name)
