@@ -32,13 +32,27 @@ CREATE VIRTUAL TABLE IF NOT EXISTS fts_index USING fts5(
 """
 
 
+PATH_MAP_CREATE = """
+CREATE TABLE IF NOT EXISTS fts_paths (
+    output_path TEXT PRIMARY KEY,
+    fts_rowid INTEGER NOT NULL
+)
+"""
+
+
 class SearchIndex:
-    """SQLite FTS5 search index over the normalised corpus."""
+    """SQLite FTS5 search index over the normalised corpus.
+
+    FTS5 cannot index a column, so ``WHERE output_path = ?`` on ``fts_index`` scans the
+    whole index (~5 s at 30k documents). ``fts_paths`` maps each output path to its FTS
+    rowid so replacing, removing and renaming a document address it by rowid instead.
+    """
 
     def __init__(self, db_path: Path) -> None:
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._ensure_table()
+        self._ensure_path_map()
 
     def _ensure_table(self) -> None:
         try:
@@ -46,6 +60,51 @@ class SearchIndex:
         except sqlite3.OperationalError:
             self.conn.execute(FTS_CREATE)
             self.conn.commit()
+
+    def _ensure_path_map(self) -> None:
+        """Create the path map, and (re)build it when it disagrees with the index.
+
+        Runs once for databases created before the map existed, and again only if the two
+        ever diverge (e.g. a crash mid-update). Historical duplicate paths are collapsed,
+        keeping the newest row, which is what ``upsert`` always intended.
+        """
+        self.conn.execute(PATH_MAP_CREATE)
+        try:
+            indexed = self.conn.execute("SELECT COUNT(*) FROM fts_index_docsize").fetchone()[0]
+        except sqlite3.OperationalError:
+            indexed = self.conn.execute("SELECT COUNT(*) FROM fts_index").fetchone()[0]
+        mapped = self.conn.execute("SELECT COUNT(*) FROM fts_paths").fetchone()[0]
+        if indexed == mapped:
+            self.conn.commit()
+            return
+
+        logger.info("Rebuilding FTS path map (%d indexed, %d mapped)", indexed, mapped)
+        latest: dict[str, int] = {}
+        superseded: list[int] = []
+        for rowid, path in self.conn.execute(
+            "SELECT rowid, output_path FROM fts_index ORDER BY rowid"
+        ):
+            if path in latest:
+                superseded.append(latest[path])
+            latest[path] = rowid
+        for rowid in superseded:
+            self.conn.execute("DELETE FROM fts_index WHERE rowid = ?", (rowid,))
+        self.conn.execute("DELETE FROM fts_paths")
+        self.conn.executemany("INSERT INTO fts_paths VALUES (?, ?)", latest.items())
+        self.conn.commit()
+
+    def _rowid_of(self, output_path: str) -> int | None:
+        row = self.conn.execute(
+            "SELECT fts_rowid FROM fts_paths WHERE output_path = ?", (output_path,)
+        ).fetchone()
+        return int(row[0]) if row else None
+
+    def _drop(self, output_path: str) -> None:
+        """Remove ``output_path`` from the index and the map (no commit)."""
+        rowid = self._rowid_of(output_path)
+        if rowid is not None:
+            self.conn.execute("DELETE FROM fts_index WHERE rowid = ?", (rowid,))
+            self.conn.execute("DELETE FROM fts_paths WHERE output_path = ?", (output_path,))
 
     def close(self) -> None:
         self.conn.close()
@@ -62,11 +121,8 @@ class SearchIndex:
         updated_at: str | None,
     ) -> None:
         """Insert or replace a document in the FTS index."""
-        self.conn.execute(
-            "DELETE FROM fts_index WHERE output_path = ?",
-            (output_path,),
-        )
-        self.conn.execute(
+        self._drop(output_path)
+        cur = self.conn.execute(
             """
             INSERT INTO fts_index
             (title, body, source_type, source_name, source_key, source_url, output_path, updated_at)
@@ -83,16 +139,24 @@ class SearchIndex:
                 updated_at or "",
             ),
         )
+        self.conn.execute(
+            "INSERT OR REPLACE INTO fts_paths VALUES (?, ?)", (output_path, cur.lastrowid)
+        )
         self.conn.commit()
 
     def remove(self, output_path: str) -> None:
-        self.conn.execute("DELETE FROM fts_index WHERE output_path = ?", (output_path,))
+        self._drop(output_path)
         self.conn.commit()
 
     def rename(self, old_path: str, new_path: str) -> None:
         """Re-point an indexed document at a moved corpus file (body is untouched)."""
+        rowid = self._rowid_of(old_path)
+        if rowid is None or old_path == new_path:
+            return
+        self._drop(new_path)  # the moved document replaces whatever sat at the destination
+        self.conn.execute("UPDATE fts_index SET output_path = ? WHERE rowid = ?", (new_path, rowid))
         self.conn.execute(
-            "UPDATE fts_index SET output_path = ? WHERE output_path = ?", (new_path, old_path)
+            "UPDATE fts_paths SET output_path = ? WHERE output_path = ?", (new_path, old_path)
         )
         self.conn.commit()
 
@@ -121,6 +185,7 @@ class SearchIndex:
     def rebuild_from_corpus(self, output_root: Path) -> int:
         """Rebuild the entire FTS index from corpus Markdown files."""
         self.conn.execute("DELETE FROM fts_index")
+        self.conn.execute("DELETE FROM fts_paths")
 
         count = 0
         for md_file in output_root.rglob("*.md"):
@@ -138,7 +203,7 @@ class SearchIndex:
             text = md_file.read_text(encoding="utf-8", errors="replace")
             front_matter, body = _split_front_matter(text)
 
-            self.conn.execute(
+            cur = self.conn.execute(
                 """
                 INSERT INTO fts_index
                 (title, body, source_type, source_name,
@@ -155,6 +220,9 @@ class SearchIndex:
                     rel_path,
                     front_matter.get("updated_at", ""),
                 ),
+            )
+            self.conn.execute(
+                "INSERT OR REPLACE INTO fts_paths VALUES (?, ?)", (rel_path, cur.lastrowid)
             )
             count += 1
 

@@ -29,6 +29,8 @@ REQUEST_TIMEOUT = 120.0
 class ConfluenceAdapter(Source):
     """Confluence source adapter supporting both Cloud and Data Center."""
 
+    refetch_needs_full = True  # incremental discovery; see Source.refetch_needs_full
+
     def __init__(self, config: ConfluenceSource, *, overlap_minutes: int = 15) -> None:
         self.config = config
         self._overlap_minutes = overlap_minutes

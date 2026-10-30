@@ -257,6 +257,49 @@ def reindex(config: str | None) -> None:
 
 @main.command()
 @click.option("--config", "-c", type=str, default=None)
+def verify(config: str | None) -> None:
+    """Check that every indexed document still exists on disk (read-only).
+
+    Exits 1 if files are missing. The next sync (or daemon run) re-fetches them
+    automatically; nothing is changed here.
+    """
+    from workctx.config import load_config
+    from workctx.drift import drift_report
+    from workctx.state import StateDB
+
+    cfg = load_config(_find_config(config))
+    db_path = cfg.state_dir / "state.sqlite"
+    if not db_path.exists():
+        console.print("[yellow]No state database. Run 'workctx sync' first.[/yellow]")
+        return
+    db = StateDB(db_path)
+    try:
+        report = drift_report(db, cfg.output_root_path)
+    finally:
+        db.close()
+
+    table = Table(title=f"Corpus check — {cfg.output_root_path}")
+    table.add_column("Source")
+    table.add_column("Indexed", justify="right")
+    table.add_column("On disk", justify="right")
+    table.add_column("Missing", justify="right")
+    for name, (total, missing) in report.items():
+        style = "red" if missing else "green"
+        table.add_row(name, str(total), str(total - missing), f"[{style}]{missing}[/{style}]")
+    console.print(table)
+
+    lost = sum(missing for _, missing in report.values())
+    if lost:
+        console.print(
+            f"[red]{lost} indexed document(s) are missing on disk.[/red] "
+            "Run 'workctx sync' (or let the daemon run): they are re-fetched automatically."
+        )
+        sys.exit(1)
+    console.print("[green]All indexed documents are present on disk.[/green]")
+
+
+@main.command()
+@click.option("--config", "-c", type=str, default=None)
 @click.option("--dry-run", is_flag=True, help="Show what would move without changing anything")
 @click.option("--verbose", "-v", is_flag=True)
 def relayout(config: str | None, dry_run: bool, verbose: bool) -> None:

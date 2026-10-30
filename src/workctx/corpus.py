@@ -14,6 +14,7 @@ import posixpath
 import re
 import tempfile
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -257,14 +258,12 @@ def remove_corpus_file(output_root: Path, relative_path: str) -> None:
 _PART_NAME_RE = re.compile(r"^(?P<stem>.+)\.part-\d{3,}(?P<ext>\.[^./]+)$")
 
 
-def document_files(output_root: Path, stored_path: str) -> list[str]:
-    """Every corpus file that belongs to the document stored at ``stored_path``.
+def document_matcher(stored_path: str) -> tuple[str, Callable[[str], bool]]:
+    """``(parent_dir, is_member)`` for the document stored at ``stored_path``.
 
-    A document is either one file (``x.pdf.md``) or, when large, a set of
-    ``x.pdf.part-NNN.md`` files (possibly alongside a stale ``x.pdf.md`` left by an older
-    run). ``stored_path`` may name any of them. Names are matched literally (no globbing:
-    document names contain ``[``/``]``), the directory is read once, and a missing
-    directory simply means there is nothing to remove.
+    ``is_member(file_name)`` is true for the single-file form (``x.pdf.md``) and for every
+    ``x.pdf.part-NNN.md`` part. ``stored_path`` may name any of them. Names are compared
+    literally (no globbing: document names contain ``[``/``]``).
     """
     norm = posixpath.normpath(stored_path)
     parent, name = posixpath.split(norm)
@@ -275,11 +274,24 @@ def document_files(output_root: Path, stored_path: str) -> list[str]:
         stem, ext = os.path.splitext(name)
     base_name = f"{stem}{ext}"
     part_re = re.compile(re.escape(stem) + r"\.part-\d{3,}" + re.escape(ext) + "$")
+    return parent, lambda n: n == base_name or part_re.match(n) is not None
+
+
+def document_files(output_root: Path, stored_path: str) -> list[str]:
+    """Every corpus file that belongs to the document stored at ``stored_path``.
+
+    A document is either one file (``x.pdf.md``) or, when large, a set of
+    ``x.pdf.part-NNN.md`` files (possibly alongside a stale ``x.pdf.md`` left by an older
+    run). ``stored_path`` may name any of them. Names are matched literally (no globbing:
+    document names contain ``[``/``]``), the directory is read once, and a missing
+    directory simply means there is nothing to remove.
+    """
+    parent, is_member = document_matcher(stored_path)
     try:
         names = os.listdir(output_root / parent if parent else output_root)
     except (FileNotFoundError, NotADirectoryError):
         return []
-    found = sorted(n for n in names if n == base_name or part_re.match(n))
+    found = sorted(n for n in names if is_member(n))
     return [posixpath.join(parent, n) if parent else n for n in found]
 
 

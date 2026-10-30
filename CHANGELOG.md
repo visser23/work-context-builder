@@ -3,6 +3,42 @@
 All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.6]
+
+### Fixed
+- **The corpus held ~3,300 files while the index listed ~30,000.** The state DB lives outside
+  the cloud-synced output folder, so when OneDrive reset that folder (21 Oct) the files
+  vanished but every row still said "synced". Incremental discovery only looks at what changed
+  at the source (and `--full` skips rows whose version/hash still match), so nothing was ever
+  re-created. Every sync now checks the disk first (`workctx.drift`): documents whose files
+  are missing are marked for re-fetch (version, content hash, retry count cleared) and
+  re-downloaded; checkpoint-bound sources (Jira, Confluence, Slack, local folders) are given a
+  full listing for that run. A busy cloud folder (EDEADLK/ETIMEDOUT) counts as *unknown*,
+  never as missing. The check repeats every run, so a document that fails is retried.
+- **Every write cost a full scan of the search index (~5 s at 30k documents).** FTS5 cannot index
+  a column, so `DELETE FROM fts_index WHERE output_path = ?` (run on each upsert/remove) read
+  every row; a 27k-document repair would have taken days. `SearchIndex` now keeps an indexed
+  `fts_paths` map (output path -> FTS rowid): ~0.2 ms per write. Existing databases are
+  upgraded automatically on first open (~4 s; historical duplicate rows are collapsed).
+- **The daemon now notices missing files itself** (at start-up and every 6 h) and starts a
+  repair sync instead of waiting for the next daily sync.
+- **Fresh installs failed on Python 3.14**: `onnxruntime` (via `markitdown`/`magika`) has no 3.14
+  wheels. `requires-python` is now `>=3.12,<3.14`, so `uv` picks a supported interpreter
+  automatically.
+- **Clearing OS caches broke every browser refresh.** Playwright downloads Chromium to
+  `~/Library/Caches/ms-playwright` (`~/.cache` on Linux), which cache cleaners delete; the
+  daemon then failed with "Executable doesn't exist" on every SharePoint / Outlook / Slack
+  session refresh. Chromium now lives in a persistent folder
+  (`<app data>/WorkContextMirror/ms-playwright`): `workctx.browsers` pins
+  `PLAYWRIGHT_BROWSERS_PATH` (an explicit value inside a `Caches`/`.cache` dir is overridden),
+  re-installs Chromium automatically if it is missing at launch, `install-service` installs it
+  there and passes the variable to launchd/systemd/Task Scheduler and `workctx-relogin`, and
+  `doctor` reports whether Chromium is present.
+
+### Added
+- `workctx verify`: read-only per-source table of indexed vs present documents (exit 1 if any
+  are missing).
+
 ## [1.4.5]
 
 ### Fixed
@@ -70,22 +106,6 @@ All notable changes to this project are documented here. The project follows
 ### Notes
 - The first run after upgrading rewrites each item a source returns once, because stored hashes
   from earlier versions included `synced_at`. After that, identical items are left alone.
-
-## [Unreleased]
-
-### Fixed
-- **Fresh installs failed on Python 3.14**: `onnxruntime` (via `markitdown`/`magika`) has no 3.14
-  wheels. `requires-python` is now `>=3.12,<3.14`, so `uv` picks a supported interpreter
-  automatically.
-- **Clearing OS caches broke every browser refresh.** Playwright downloads Chromium to
-  `~/Library/Caches/ms-playwright` (`~/.cache` on Linux), which cache cleaners delete; the
-  daemon then failed with "Executable doesn't exist" on every SharePoint / Outlook / Slack
-  session refresh. Chromium now lives in a persistent folder
-  (`<app data>/WorkContextMirror/ms-playwright`): `workctx.browsers` pins
-  `PLAYWRIGHT_BROWSERS_PATH` (an explicit value inside a `Caches`/`.cache` dir is overridden),
-  re-installs Chromium automatically if it is missing at launch, `install-service` installs it
-  there and passes the variable to launchd/systemd/Task Scheduler and `workctx-relogin`, and
-  `doctor` reports whether Chromium is present.
 
 ## [1.4.0]
 

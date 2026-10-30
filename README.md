@@ -727,6 +727,7 @@ running from the repo directory.
 | `workctx auth login-sharepoint --source <name>` | Browser login for SharePoint cookie capture |
 | `workctx auth login-web --source <name>` | Visible browser sign-in for an email, calendar or Slack source (rarely needed) |
 | `workctx reconcile` | Force deletion detection across all sources |
+| `workctx verify` | Check every indexed document still exists on disk (read-only; the next sync re-fetches anything missing) |
 | `workctx reindex` | Rebuild the full-text search index |
 
 ---
@@ -865,6 +866,7 @@ to each source, and reports exactly what's wrong.
 | Slack shows a browser-not-supported page / nothing is found | Update Playwright's Chromium (`uv run playwright install chromium`). On Enterprise Grid make sure `client_url` is the URL you use in your browser; the org-level token cannot read messages, so the tool reads each workspace you belong to |
 | `Executable doesn't exist at .../ms-playwright/...` | Chromium was deleted (e.g. by a cache cleaner). It is re-installed automatically on the next refresh; or run `uv run playwright install chromium`. `uv run workctx doctor` shows the expected location |
 | `Playwright not installed` | Run `uv sync --extra playwright && uv run playwright install chromium` |
+| The output folder holds far fewer files than the index/`PROJECT_BRIEF.md` lists | The cloud client (OneDrive) reset or emptied the folder. Run `uv run workctx verify` to see the gap; the daemon notices within hours and every sync re-fetches missing documents automatically (large mailboxes take a while: mail is throttled by Microsoft) |
 | `Lock file stale` | Another sync crashed. Delete `run.lock` from the state directory |
 | `Daemon not running` | Run `uv run workctx service-status`, then `uv run workctx install-service` to reinstall |
 | `Operation timed out (os error 60)` | OneDrive/cloud storage isn't serving files. Restart the OneDrive app. Use `workctx-relogin` (which bypasses OneDrive) instead of `uv run` |

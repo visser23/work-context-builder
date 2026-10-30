@@ -14,6 +14,11 @@ if TYPE_CHECKING:
 class Source(ABC):
     """Base class for all source adapters."""
 
+    #: True when incremental discovery only lists what changed since the checkpoint
+    #: (Jira, Confluence, Slack). Re-fetching documents whose files went missing then needs
+    #: a full listing; sources that list everything on every run leave this False.
+    refetch_needs_full: bool = False
+
     @property
     @abstractmethod
     def name(self) -> str: ...

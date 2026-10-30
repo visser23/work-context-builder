@@ -5,8 +5,9 @@ launchd (macOS), systemd (Linux), or Task Scheduler (Windows).
 
 On each loop iteration:
   1. Check if a daily sync is due (last success > 24h ago)
-  2. Poll Telegram for inbound commands (/sync, /status, /help)
-  3. Sleep and repeat
+  2. Check the output folder still holds what the index says (repair sync if not)
+  3. Poll Telegram for inbound commands (/sync, /status, /help)
+  4. Sleep and repeat
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from workctx.config import ProjectConfig, load_config
+from workctx.drift import drift_report
 from workctx.logging_config import generate_run_id, setup_logging
 from workctx.state import StateDB
 
@@ -28,6 +30,7 @@ SYNC_INTERVAL_HOURS = 24
 POLL_INTERVAL_SECONDS = 10
 LOOP_SLEEP_SECONDS = 30
 COOKIE_KEEPALIVE_HOURS = 4
+DRIFT_CHECK_HOURS = 6
 NOTIFICATION_DEDUP_HOURS = 6
 MIN_RETRY_DELAY_MINUTES = 30
 MAX_RETRY_DELAY_MINUTES = 6 * 60
@@ -76,6 +79,7 @@ class Daemon:
         self._last_sync_attempt: datetime | None = None
         self._consecutive_failures = 0
         self._last_cookie_keepalive: datetime | None = None
+        self._last_drift_check: datetime | None = None
         self._notified_messages: dict[str, datetime] = {}
 
     def run(self) -> None:
@@ -98,6 +102,7 @@ class Daemon:
         try:
             while self._running:
                 self._check_and_sync()
+                self._check_drift()
                 self._check_cookie_keepalive()
                 time.sleep(LOOP_SLEEP_SECONDS)
         finally:
@@ -178,6 +183,46 @@ class Daemon:
         logger.info("Daily sync is due — triggering")
         self.trigger_sync(source="daily-check")
 
+    def _check_drift(self) -> None:
+        """Start a repair sync when indexed files are missing from the output folder.
+
+        The state DB lives outside the (cloud-synced) output folder, so a folder reset or a
+        bulk delete leaves it claiming files that no longer exist, and incremental syncs
+        never rebuild them. Checked at start-up and every few hours; the sync itself marks
+        and re-fetches the missing documents (see ``workctx.drift``).
+        """
+        if self._syncing:
+            return
+        now = datetime.now(UTC)
+        if self._last_drift_check:
+            hours = (now - self._last_drift_check).total_seconds() / 3600
+            if hours < DRIFT_CHECK_HOURS:
+                return
+        self._last_drift_check = now
+
+        try:
+            db = StateDB(self.config.state_dir / "state.sqlite")
+            try:
+                report = drift_report(db, self.config.output_root_path)
+            finally:
+                db.close()
+        except Exception:
+            logger.warning("Drift check failed; will try again later", exc_info=True)
+            return
+
+        missing = sum(m for _, m in report.values())
+        if not missing:
+            return
+        if self._last_sync_attempt:
+            mins = (now - self._last_sync_attempt).total_seconds() / 60
+            if mins < retry_delay(self._consecutive_failures):
+                return
+        logger.warning(
+            "%d indexed file(s) are missing from the output folder — starting a repair sync",
+            missing,
+        )
+        self.trigger_sync(source="drift-repair")
+
     def _check_cookie_keepalive(self) -> None:
         """Check SharePoint session cookie validity periodically."""
         browser_sources = [sp for sp in self.config.sources.sharepoint if sp.mode == "browser"]
@@ -219,9 +264,7 @@ class Daemon:
             # SharePoint invalidates sessions server-side after a few hours, but the
             # browser profile can usually re-authenticate silently. Try that first;
             # only bother the user if a human is genuinely needed.
-            logger.info(
-                "Stored cookies for %s rejected — attempting headless refresh", sp.name
-            )
+            logger.info("Stored cookies for %s rejected — attempting headless refresh", sp.name)
             try:
                 keepalive_and_extract(site_url, sp.name, secret_ref)
                 logger.info("Headless refresh recovered SharePoint session for %s", sp.name)
