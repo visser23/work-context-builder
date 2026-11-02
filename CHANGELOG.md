@@ -3,6 +3,17 @@
 All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.8]
+
+### Fixed
+- **A big SharePoint backlog starved every other source.** All sources shared one first-in,
+  first-out pool of 4 workers, so ~4,000 slow PDF/Office conversions (a single PDF can take
+  2+ minutes) queued ahead of ~26,000 quick Jira/mail/Slack/calendar/Teams writes, which then
+  sat idle for hours on a machine with nothing else to do for them. Sources that convert heavy
+  documents (`heavy_conversion = True`: SharePoint) now run in their own lane (half the
+  workers, at most 2); the text sources keep the shared pool and finish in minutes. If every
+  configured source is heavy they still share the whole pool.
+
 ## [1.4.7]
 
 ### Fixed

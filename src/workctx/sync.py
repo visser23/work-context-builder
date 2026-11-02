@@ -243,6 +243,10 @@ def run_sync(
                 thread_name_prefix="worker",
             ) as shared_pool,
             ThreadPoolExecutor(
+                max_workers=_lane_size(max_workers),
+                thread_name_prefix="heavy",
+            ) as heavy_pool,
+            ThreadPoolExecutor(
                 max_workers=len(sources),
                 thread_name_prefix="source",
             ) as source_pool,
@@ -258,7 +262,7 @@ def run_sync(
                     dry_run=dry_run,
                     full=full,
                     progress=progress,
-                    worker_pool=shared_pool,
+                    worker_pool=_pick_pool(source, sources, shared_pool, heavy_pool),
                     max_workers=max_workers,
                 ): source
                 for source in sources
@@ -320,6 +324,29 @@ def run_reconciliation(config: ProjectConfig, *, run_id: str, force: bool = Fals
                 source.close()
         db.close()
         idx.close()
+
+
+def _lane_size(max_workers: int) -> int:
+    """Workers in the lane for slow, CPU-heavy sources: half the pool, at most two."""
+    return max(1, min(2, max_workers // 2))
+
+
+def _pick_pool(
+    source: Source,
+    sources: list[Source],
+    shared_pool: ThreadPoolExecutor,
+    heavy_pool: ThreadPoolExecutor,
+) -> ThreadPoolExecutor:
+    """The pool ``source`` runs its conversions on.
+
+    Heavy sources (SharePoint documents) get their own lane so they cannot sit in front of
+    the quick text sources in the shared FIFO queue. If *every* source is heavy there is
+    nothing to protect, so they all share the full pool.
+    """
+    heavy = [getattr(s, "heavy_conversion", False) for s in sources]
+    if getattr(source, "heavy_conversion", False) and not all(heavy):
+        return heavy_pool
+    return shared_pool
 
 
 def _build_sources(config: ProjectConfig) -> list[Source]:

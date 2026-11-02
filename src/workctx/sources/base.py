@@ -19,6 +19,12 @@ class Source(ABC):
     #: a full listing; sources that list everything on every run leave this False.
     refetch_needs_full: bool = False
 
+    heavy_conversion: bool = False
+    """Converting this source's documents is slow and CPU-bound (PDF/Office/OCR).
+
+    Such a source gets its own small worker lane so a backlog of long conversions cannot
+    queue ahead of (and starve) the quick text sources on the shared pool."""
+
     @property
     @abstractmethod
     def name(self) -> str: ...

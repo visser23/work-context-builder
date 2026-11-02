@@ -111,6 +111,8 @@ class _Listing:
 class SharePointWebSource(Source):
     """SharePoint via browser cookies + REST API."""
 
+    heavy_conversion = True  # own worker lane; see Source.heavy_conversion
+
     def __init__(self, config: SharePointSource, *, max_workers: int = 12) -> None:
         self.config = config
         self._max_workers = max(1, max_workers)
