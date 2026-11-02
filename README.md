@@ -347,6 +347,11 @@ captures the session cookies automatically.
 >   `workctx-relogin` command from the message.
 > - `workctx-relogin` also validates what it captures; it will not store cookies
 >   SharePoint rejects.
+> - **Throttling is not an expired login.** SharePoint rate-limits by redirecting to
+>   `/_layouts/15/Throttle.htm`. The tool recognises that page, pauses all SharePoint
+>   requests (15 s, 30 s, 60 s ... up to 2 min) and retries; it never asks you to log in
+>   for it. A login you do in another terminal (`workctx-relogin`) is picked up by the
+>   running daemon without a restart.
 
 > **Where do I find `site_url` and `server_relative_path`?**
 > - Go to the SharePoint document library in your browser
@@ -859,6 +864,7 @@ to each source, and reports exactly what's wrong.
 | `Config file not found` | Rename your config to `workctx.yaml`, or pass `--config path/to/config.yaml` |
 | `Multiple YAML configs found` | Rename yours to `workctx.yaml` (auto-detected by convention) or use `--config` |
 | `401 Unauthorized` on Confluence/Jira | Your token expired or is wrong. Generate a new one and `uv run workctx auth set <ref>` |
+| `SharePoint is throttling ... (redirect to Throttle.htm)` in the log | Not a login problem: SharePoint is rate-limiting. The tool pauses and retries by itself (files that still fail are retried next run). Nothing to do unless it persists for hours |
 | `SharePoint session expired` | The automatic headless refresh already failed, so a human step is needed (password/MFA, or the ~90-day login lapsed). Run `workctx-relogin --source <name>` (works even if OneDrive is down). Falls back to `uv run workctx auth login-sharepoint --config workctx.yaml --source <name>`. Look for `Headless refresh for … found no valid cookies (last page: …)` in `logs/daemon-stderr.log` to see where SSO got stuck |
 | `Sync failed with unhandled exception` + `Resource deadlock avoided` / `os error 60` while writing `_meta/*` | OneDrive File Provider hiccup. Metadata writes now retry automatically; a run-level failure is reported as FAILED (and alerted) rather than "healthy" |
 | Teams transcripts sync finds nothing | Check the meeting was recorded **with transcription**, that `sharepoint_source` points at a logged-in browser-mode source, and run `uv run workctx doctor --verbose` (it probes both SharePoint hosts). Recordings in a departed colleague's locked OneDrive are skipped quietly (HTTP 423) |

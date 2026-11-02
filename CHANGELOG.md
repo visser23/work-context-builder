@@ -3,6 +3,27 @@
 All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.7]
+
+### Fixed
+- **"SharePoint kept rejecting the session — run workctx-relogin" while already logged in.**
+  SharePoint rate-limits by *redirecting* to `/_layouts/15/Throttle.htm`, which looks just like
+  the bounce to the login page. Every redirect was read as an expired login: downloads burned
+  the 3-per-run refresh budget in seconds (each "refresh" rebuilt the client from the same
+  cookies, no browser involved), after which every remaining file failed and the alert told
+  you to log in again. Now:
+  - Throttling is recognised (`is_throttle_redirect`) in the session probe, normal requests,
+    downloads and Teams transcripts: all SharePoint requests pause (15 s, 30 s, 60 s ... capped
+    at 2 min) instead of hammering on, and the login is left alone.
+  - A refused download is checked against the session probe first; the shared refresh budget is
+    only for a genuinely rejected session and now resets after the next accepted request.
+  - A login done elsewhere (`workctx-relogin`, the keep-alive) is picked up by the running
+    daemon without a browser. If downloads stay refused while the probe passes, one rationed
+    forced fresh login is requested from the browser profile (`keepalive_and_extract(fresh=True)`).
+  - A single refused file now fails that file (retried next run), not the whole source.
+  - Teams transcripts retries a single 401/redirect once before reporting an expired login.
+  - Logs now say what SharePoint answered (status and redirect target).
+
 ## [1.4.6]
 
 ### Fixed

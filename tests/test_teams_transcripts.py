@@ -302,6 +302,22 @@ class TestDiscovery:
         with pytest.raises(SessionExpiredError):
             make_source().discover_changes(db, None)
 
+    def test_one_refused_request_is_retried_not_fatal(self, tenant, db):
+        """A single 401 blip must not end the run with "please log in again"."""
+        tenant.add(uid(1), "Blip")
+        tenant.auth_blips = 1
+        assert len(make_source().discover_changes(db, None)) == 1
+
+    def test_throttle_redirect_waits_instead_of_blaming_the_login(self, tenant, db, monkeypatch):
+        tenant.add(uid(1), "Throttled")
+        tenant.auth_blips = 1
+        tenant.blip_location = "/_layouts/15/Throttle.htm?x=1"
+        source = make_source()
+        monkeypatch.setattr(
+            source, "_drop_client", lambda url: pytest.fail("a throttle is not a bad login")
+        )
+        assert len(source.discover_changes(db, None)) == 1
+
     def test_login_redirect_raises_session_expired(self, tenant, db):
         tenant.auth_status = 302
         with pytest.raises(SessionExpiredError):

@@ -25,6 +25,7 @@ Credentials are only ever attached to those two hosts.
 from __future__ import annotations
 
 import base64
+import contextlib
 import fnmatch
 import logging
 import re
@@ -42,6 +43,7 @@ import httpx
 from workctx.auth.sharepoint import (
     SessionExpiredError,
     get_valid_cookies,
+    is_throttle_redirect,
     onedrive_secret_ref,
     relogin_hint,
     tenant_hosts,
@@ -629,6 +631,14 @@ class TeamsTranscriptSource(Source):
             return ""
         return f"https://{parsed.hostname.lower()}"
 
+    def _drop_client(self, url: str) -> None:
+        """Forget (and close) the cached client for ``url``'s host so the next call rebuilds it."""
+        with self._client_lock:
+            client = self._clients.pop(self._host_root(url), None)
+        if client is not None:
+            with contextlib.suppress(Exception):
+                client.close()
+
     def _client_for(self, url: str) -> httpx.Client:
         """Return the authenticated client for ``url``'s host (refuses unknown hosts)."""
         root = self._host_root(url)
@@ -657,23 +667,43 @@ class TeamsTranscriptSource(Source):
         accept: str = "application/json",
     ) -> httpx.Response:
         """GET with throttling back-off. Raises ``SessionExpiredError`` on auth loss."""
-        client = self._client_for(url)
         resp: httpx.Response | None = None
-        for attempt in range(MAX_RETRIES):
-            resp = client.get(url, params=params, headers={"Accept": accept})
-            if resp.status_code in (429, 503, 504):
-                wait = _retry_after(resp, default=2.0 ** (attempt + 1))
-                logger.warning(
-                    "Transcripts/%s: throttled (HTTP %d), waiting %.0fs",
-                    self.name,
-                    resp.status_code,
-                    wait,
-                )
-                time.sleep(wait)
-                continue
-            break
+        for auth_try in range(2):
+            client = self._client_for(url)
+            for attempt in range(MAX_RETRIES):
+                resp = client.get(url, params=params, headers={"Accept": accept})
+                throttle_page = is_throttle_redirect(resp)
+                if resp.status_code in (429, 503, 504) or throttle_page:
+                    wait = _retry_after(
+                        resp,
+                        default=15.0 * (attempt + 1) if throttle_page else 2.0 ** (attempt + 1),
+                    )
+                    logger.warning(
+                        "Transcripts/%s: throttled (HTTP %d), waiting %.0fs",
+                        self.name,
+                        resp.status_code,
+                        wait,
+                    )
+                    time.sleep(wait)
+                    continue
+                break
+            assert resp is not None
+            if is_throttle_redirect(resp):
+                break  # still throttled after every wait: not an expired login
+            if resp.status_code not in (301, 302, 303, 307, 308, 401) or auth_try == 1:
+                break
+            # One refusal is not proof the login is gone: rebuild the client (this re-checks
+            # the stored cookies and only opens a browser if they are really rejected) and
+            # try once more before asking a human.
+            logger.warning(
+                "Transcripts/%s: SharePoint answered HTTP %d — re-checking the session",
+                self.name,
+                resp.status_code,
+            )
+            self._drop_client(url)
         assert resp is not None
-        if resp.status_code in (301, 302, 303, 307, 308, 401):
+        rejected = resp.status_code in (301, 302, 303, 307, 308, 401)
+        if rejected and not is_throttle_redirect(resp):
             raise SessionExpiredError(
                 f"SharePoint session for '{self._profile_name}' was rejected. "
                 f"Run: {relogin_hint(self._profile_name)}"

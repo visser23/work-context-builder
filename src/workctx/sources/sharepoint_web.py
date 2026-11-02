@@ -30,7 +30,7 @@ from datetime import datetime
 from pathlib import Path
 from threading import Lock, RLock
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -38,6 +38,7 @@ from workctx.auth.sharepoint import (
     CookieStatus,
     SessionExpiredError,
     cookie_status,
+    is_throttle_redirect,
     keepalive_and_extract,
     load_cookies,
     relogin_hint,
@@ -61,7 +62,18 @@ MAX_ATTEMPTS = 5
 """Tries per HTTP request before a transient failure is surfaced."""
 MAX_BACKOFF_SECONDS = 60.0
 MAX_SESSION_REFRESHES = 3
-"""Browser refreshes allowed per run when SharePoint starts rejecting the cookies."""
+"""Consecutive browser refreshes allowed when SharePoint rejects the cookies.
+
+Reset by the next request SharePoint accepts, so scattered blips over a long run never add
+up to "the login is gone" (they used to: three in a few seconds ended the whole run)."""
+MAX_THROTTLE_WAIT_SECONDS = 120.0
+THROTTLE_BASE_WAIT_SECONDS = 15.0
+"""SharePoint rate-limits by redirecting to ``Throttle.htm``. Hammering on makes it worse, so
+every request pauses (15 s, 30 s, 60 s ... capped) until the pause is over."""
+MAX_FORCED_REFRESHES = 2
+"""Forced fresh logins per run when downloads are refused although the session probe passes."""
+FORCED_REFRESH_COOLDOWN_SECONDS = 120.0
+"""Minimum gap between forced fresh logins, so one broken file cannot spin up a browser per try."""
 MAX_STUB_RETRIES = 3
 """A file that keeps failing to convert is retried this many runs, then only when it changes."""
 MASS_DELETE_MIN = 100
@@ -105,6 +117,10 @@ class SharePointWebSource(Source):
         self._client: httpx.Client | None = None
         self._auth_lock = RLock()
         self._session_refreshes = 0
+        self._client_cookies: dict[str, str] = {}
+        self._forced_refreshes = 0
+        self._throttle_until = 0.0  # time.monotonic() before which no request is sent
+        self._last_forced_refresh = float("-inf")
         self._listing: _Listing | None = None
         self._skipped: Counter[str] = Counter()
         self._site_url = (config.site_url or "").rstrip("/")
@@ -165,6 +181,7 @@ class SharePointWebSource(Source):
         with self._auth_lock:
             if self._client is None:
                 cookies = self._get_cookies()
+                self._client_cookies = dict(cookies)
 
                 cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
                 self._client = httpx.Client(
@@ -208,6 +225,115 @@ class SharePointWebSource(Source):
             self._client = None
             self._get_client()  # raises SessionExpiredError if a human is needed
 
+    def _note_throttle(self, attempt: int) -> float:
+        """Record that SharePoint is throttling us; all workers pause. Returns the pause."""
+        wait = _throttle_wait(attempt)
+        self._throttle_until = max(self._throttle_until, time.monotonic() + wait)
+        return wait
+
+    def _wait_for_throttle(self) -> None:
+        """Block while a throttle pause is in force (shared by every worker thread)."""
+        remaining = self._throttle_until - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
+
+    def _adopt_stored_cookies(self, failed_client: httpx.Client) -> bool:
+        """Switch to cookies another process stored (``workctx-relogin``, the keepalive).
+
+        The running client keeps the cookies it started with; a login done elsewhere only
+        reaches the credential store. Caller holds ``_auth_lock``. Returns True if the
+        client was rebuilt from newer cookies that SharePoint accepts.
+        """
+        secret_ref = self.config.auth.secret_ref if self.config.auth else ""
+        stored = load_cookies(secret_ref) if secret_ref else None
+        if not stored or stored == self._client_cookies:
+            return False
+        if cookie_status(self._site_url, stored) is not CookieStatus.VALID:
+            return False
+        logger.info(
+            "Newer SharePoint cookies for %s are available (login or refresh elsewhere) — "
+            "using them, no browser needed",
+            self.name,
+        )
+        with contextlib.suppress(Exception):
+            failed_client.close()
+        self._client = None
+        self._get_client()
+        return True
+
+    def _force_fresh_session(self, failed_client: httpx.Client) -> bool:
+        """Have the browser profile re-issue the SharePoint cookies from scratch.
+
+        The cheap session probe can pass while downloads are still refused, and a normal
+        refresh would read the same cookies back out of the profile. Rationed
+        (``MAX_FORCED_REFRESHES`` per run, ``FORCED_REFRESH_COOLDOWN_SECONDS`` apart).
+        Caller holds ``_auth_lock``. Raises ``SessionExpiredError`` only if the identity
+        provider genuinely needs a human; returns False if rationed out.
+        """
+        now = time.monotonic()
+        if (
+            self._forced_refreshes >= MAX_FORCED_REFRESHES
+            or now - self._last_forced_refresh < FORCED_REFRESH_COOLDOWN_SECONDS
+        ):
+            return False
+        secret_ref = self.config.auth.secret_ref if self.config.auth else ""
+        if not secret_ref:
+            return False
+        self._forced_refreshes += 1
+        self._last_forced_refresh = now
+        logger.warning(
+            "SharePoint keeps refusing downloads for %s although the session probe passes — "
+            "asking the browser profile for a fresh login (%d/%d)",
+            self.name,
+            self._forced_refreshes,
+            MAX_FORCED_REFRESHES,
+        )
+        with contextlib.suppress(Exception):
+            failed_client.close()
+        self._client = None
+        try:
+            keepalive_and_extract(self._site_url, self.name, secret_ref, fresh=True)
+        except SessionExpiredError:
+            raise
+        except Exception as exc:
+            logger.warning("Fresh login for %s failed: %s", self.name, exc, exc_info=True)
+        self._get_client()
+        return True
+
+    def _handle_download_rejection(
+        self, client: httpx.Client, status: int, location: str | None, attempt: int
+    ) -> None:
+        """A file download was answered 401/3xx. Work out whether the *login* is the problem.
+
+        Only a rejected session probe means the login is gone. Otherwise this one file (or a
+        passing blip) said no: pick up newer stored cookies if there are any, escalate to a
+        fresh browser login on repeats, and back off - never spend the shared refresh budget
+        on a "refresh" that would hand back the very same cookies.
+        """
+        target = ""
+        if location:
+            loc = urlparse(location)
+            target = f" (redirected to {loc.hostname or '?'}{loc.path})"
+        logger.warning(
+            "SharePoint answered a download with HTTP %d%s, attempt %d/%d",
+            status,
+            target,
+            attempt,
+            MAX_ATTEMPTS,
+        )
+        if self._session_is_rejected():
+            self._handle_auth_failure(client)
+            return
+        with self._auth_lock:
+            if self._client is not client:
+                return  # another thread already replaced it
+            if self._adopt_stored_cookies(client):
+                return
+            if attempt >= 2 and self._force_fresh_session(client):
+                return
+        if attempt < MAX_ATTEMPTS:
+            time.sleep(_backoff(attempt))
+
     @staticmethod
     def _looks_unauthenticated(resp: httpx.Response) -> bool:
         return resp.status_code in (401, 403) or 300 <= resp.status_code < 400
@@ -237,6 +363,7 @@ class SharePointWebSource(Source):
         """
         last_exc: httpx.TransportError | None = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
+            self._wait_for_throttle()
             client = self._get_client()
             try:
                 resp = client.request(method, url, **kwargs)
@@ -257,6 +384,20 @@ class SharePointWebSource(Source):
                 time.sleep(delay)
                 continue
 
+            if is_throttle_redirect(resp):
+                wait = self._note_throttle(attempt)
+                logger.warning(
+                    "SharePoint is throttling %s %s (redirect to Throttle.htm) — pausing all "
+                    "requests %.0fs, attempt %d/%d",
+                    method,
+                    _short(url),
+                    wait,
+                    attempt,
+                    MAX_ATTEMPTS,
+                )
+                if attempt < MAX_ATTEMPTS:
+                    continue
+                return resp
             if self._looks_unauthenticated(resp):
                 if self._session_is_rejected():
                     self._handle_auth_failure(client)
@@ -290,6 +431,7 @@ class SharePointWebSource(Source):
                 )
                 time.sleep(delay)
                 continue
+            self._session_refreshes = 0  # SharePoint accepted us: earlier blips are forgiven
             return resp
 
         if last_exc is not None:
@@ -655,16 +797,22 @@ class SharePointWebSource(Source):
     def _download_with_retries(self, url: str, suffix: str) -> tuple[Path | None, int | None]:
         status: int | None = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
+            self._wait_for_throttle()
             client = self._get_client()
             fd, tmp_name = tempfile.mkstemp(suffix=suffix)
             retry_after: str | None = None
+            location: str | None = None
+            throttled = False
             try:
                 with os.fdopen(fd, "wb") as tmp, client.stream("GET", url) as resp:
                     status = resp.status_code
                     retry_after = resp.headers.get("Retry-After")
+                    location = resp.headers.get("Location")
+                    throttled = is_throttle_redirect(resp)
                     if status == 200:
                         for chunk in resp.iter_bytes(chunk_size=65536):
                             tmp.write(chunk)
+                        self._session_refreshes = 0
                         return Path(tmp_name), 200
             except httpx.TransportError as exc:
                 status = None
@@ -678,8 +826,20 @@ class SharePointWebSource(Source):
             with contextlib.suppress(OSError):
                 os.unlink(tmp_name)
 
+            if throttled:
+                wait = self._note_throttle(attempt)
+                logger.warning(
+                    "SharePoint is throttling downloads (redirect to Throttle.htm) — pausing "
+                    "all requests %.0fs, attempt %d/%d",
+                    wait,
+                    attempt,
+                    MAX_ATTEMPTS,
+                )
+                if attempt < MAX_ATTEMPTS:
+                    continue
+                return None, status
             if status is not None and (status == 401 or 300 <= status < 400):
-                self._handle_auth_failure(client)
+                self._handle_download_rejection(client, status, location, attempt)
                 continue
             if (status is None or status in _TRANSIENT_STATUSES) and attempt < MAX_ATTEMPTS:
                 time.sleep(_backoff(attempt, retry_after))
@@ -702,6 +862,11 @@ class SharePointWebSource(Source):
         if self._client:
             self._client.close()
             self._client = None
+
+
+def _throttle_wait(attempt: int) -> float:
+    """Pause after the ``attempt``-th throttle answer: 15 s, 30 s, 60 s ... capped."""
+    return min(MAX_THROTTLE_WAIT_SECONDS, THROTTLE_BASE_WAIT_SECONDS * 2.0 ** max(0, attempt - 1))
 
 
 def _backoff(attempt: int, retry_after: str | None = None) -> float:

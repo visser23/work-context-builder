@@ -138,9 +138,7 @@ class TestKeepaliveWaitsForSilentSso:
                 (SITE_URL, FRESH),
             ]
         )
-        result = sp.keepalive_and_extract(
-            SITE, "src", "ref", sso_wait_seconds=5, poll_interval=0.0
-        )
+        result = sp.keepalive_and_extract(SITE, "src", "ref", sso_wait_seconds=5, poll_interval=0.0)
         assert result == FRESH
         assert persisted == [FRESH]
 
@@ -155,9 +153,7 @@ class TestKeepaliveWaitsForSilentSso:
                 (SITE_URL, FRESH),
             ]
         )
-        result = sp.keepalive_and_extract(
-            SITE, "src", "ref", sso_wait_seconds=5, poll_interval=0.0
-        )
+        result = sp.keepalive_and_extract(SITE, "src", "ref", sso_wait_seconds=5, poll_interval=0.0)
         assert result == FRESH
         assert persisted == [FRESH]  # STALE was never written
 
@@ -166,17 +162,13 @@ class TestKeepaliveWaitsForSilentSso:
     ):
         fake_playwright([(LOGIN_URL, {})])
         with pytest.raises(sp.SessionExpiredError, match="interactive"):
-            sp.keepalive_and_extract(
-                SITE, "src", "ref", sso_wait_seconds=0.2, poll_interval=0.01
-            )
+            sp.keepalive_and_extract(SITE, "src", "ref", sso_wait_seconds=0.2, poll_interval=0.01)
         assert persisted == []
 
     def test_raises_when_cookies_never_validate(self, fake_playwright, profile, persisted):
         fake_playwright([(SITE_URL, STALE)])
         with pytest.raises(sp.SessionExpiredError):
-            sp.keepalive_and_extract(
-                SITE, "src", "ref", sso_wait_seconds=0.2, poll_interval=0.01
-            )
+            sp.keepalive_and_extract(SITE, "src", "ref", sso_wait_seconds=0.2, poll_interval=0.01)
         assert persisted == []
 
     def test_stale_pair_is_only_http_tested_once(self, fake_playwright, profile, monkeypatch):
@@ -186,25 +178,19 @@ class TestKeepaliveWaitsForSilentSso:
         monkeypatch.setattr(sp, "_http_test_cookies", tester)
         fake_playwright([(SITE_URL, STALE)])
         with pytest.raises(sp.SessionExpiredError):
-            sp.keepalive_and_extract(
-                SITE, "src", "ref", sso_wait_seconds=0.2, poll_interval=0.01
-            )
+            sp.keepalive_and_extract(SITE, "src", "ref", sso_wait_seconds=0.2, poll_interval=0.01)
         assert tester.call_count == 1
 
     def test_browser_context_is_always_closed(self, fake_playwright, profile, persisted):
         browser = fake_playwright([(LOGIN_URL, {})])
         with pytest.raises(sp.SessionExpiredError):
-            sp.keepalive_and_extract(
-                SITE, "src", "ref", sso_wait_seconds=0.1, poll_interval=0.01
-            )
+            sp.keepalive_and_extract(SITE, "src", "ref", sso_wait_seconds=0.1, poll_interval=0.01)
         assert browser.context.closed
 
     def test_error_message_does_not_leak_url_query(self, fake_playwright, profile, persisted):
         fake_playwright([(LOGIN_URL + "&code=SECRET", {})])
         with pytest.raises(sp.SessionExpiredError) as exc:
-            sp.keepalive_and_extract(
-                SITE, "src", "ref", sso_wait_seconds=0.1, poll_interval=0.01
-            )
+            sp.keepalive_and_extract(SITE, "src", "ref", sso_wait_seconds=0.1, poll_interval=0.01)
         assert "SECRET" not in str(exc.value)
         assert "workctx-relogin" in str(exc.value) or "login-sharepoint" in str(exc.value)
 
@@ -317,6 +303,10 @@ class TestCookieStatusProbe:
             outcome = queue.pop(0)
             if isinstance(outcome, Exception):
                 raise outcome
+            if isinstance(outcome, tuple):  # (status, location)
+                return httpx.Response(
+                    outcome[0], headers={"Location": outcome[1]}, request=httpx.Request("GET", url)
+                )
             return httpx.Response(outcome, request=httpx.Request("GET", url))
 
         monkeypatch.setattr(httpx, "get", fake_get)
@@ -380,3 +370,77 @@ class TestDaemonAlertWording:
         assert "refresh crashed" in text
         assert "OSError: boom" in text
         assert "session expired" not in text.lower()
+
+
+class TestFreshRefreshForcesReissue:
+    """`fresh=True`: drop the profile's SharePoint cookies so the server must issue new ones.
+
+    The cheap probe can accept cookies that SharePoint then refuses for downloads; reading
+    the profile's cookies back (what a normal refresh does) would hand the same ones back.
+    """
+
+    def test_clears_the_site_cookies_before_navigating(self, fake_playwright, profile, persisted):
+        events: list[tuple] = []
+        browser = fake_playwright([(LOGIN_URL, {}), (SITE_URL, FRESH)])
+        ctx = browser.context
+        ctx.clear_cookies = lambda **kw: events.append(("clear", kw))  # type: ignore[attr-defined]
+        page_cls = type(ctx.new_page())
+        original_goto = page_cls.goto
+        page_cls.goto = lambda self, *a, **k: (events.append(("goto",)), original_goto(self))[1]  # type: ignore[method-assign]
+        try:
+            result = sp.keepalive_and_extract(
+                SITE, "src", "ref", sso_wait_seconds=5, poll_interval=0.0, fresh=True
+            )
+        finally:
+            page_cls.goto = original_goto  # type: ignore[method-assign]
+
+        assert result == FRESH
+        cleared = [e[1]["name"] for e in events if e[0] == "clear"]
+        assert sorted(cleared) == ["FedAuth", "rtFa"]
+        assert all(e[1]["domain"] == "example.sharepoint.com" for e in events if e[0] == "clear")
+        assert events.index(("goto",)) > max(i for i, e in enumerate(events) if e[0] == "clear")
+
+    def test_a_normal_refresh_leaves_the_profile_cookies_alone(
+        self, fake_playwright, profile, persisted
+    ):
+        browser = fake_playwright([(SITE_URL, FRESH)])
+        browser.context.clear_cookies = lambda **kw: pytest.fail("must not clear")  # type: ignore[attr-defined]
+
+        assert sp.keepalive_and_extract(SITE, "src", "ref", sso_wait_seconds=5) == FRESH
+
+
+THROTTLE = (302, "/_layouts/15/Throttle.htm?returnUrl=%2Fsites%2Fx")
+LOGIN = (302, "https://login.microsoftonline.com/common/oauth2/authorize?x=1")
+
+
+class TestThrottleRedirectIsNotAnExpiredLogin:
+    """Regression (Nov 2026): SharePoint throttles by redirecting to /_layouts/15/Throttle.htm.
+
+    Every redirect used to mean "login gone", so a rate limit produced "session rejected",
+    pointless refreshes and a request to log in again while already logged in.
+    """
+
+    def test_throttle_redirect_is_not_rejected(self, monkeypatch):
+        status, _ = TestCookieStatusProbe._probe(monkeypatch, [THROTTLE, THROTTLE, THROTTLE])
+        assert status is sp.CookieStatus.UNREACHABLE
+
+    def test_throttle_then_ok_is_valid(self, monkeypatch):
+        status, left = TestCookieStatusProbe._probe(monkeypatch, [THROTTLE, 200])
+        assert status is sp.CookieStatus.VALID
+        assert left == []
+
+    def test_a_redirect_to_the_login_page_still_means_rejected(self, monkeypatch):
+        status, _ = TestCookieStatusProbe._probe(monkeypatch, [LOGIN])
+        assert status is sp.CookieStatus.REJECTED
+
+    def test_is_throttle_redirect(self):
+        import httpx
+
+        def resp(code, loc):
+            return httpx.Response(code, headers={"Location": loc} if loc else {})
+
+        assert sp.is_throttle_redirect(resp(302, THROTTLE[1]))
+        assert sp.is_throttle_redirect(resp(307, "https://x.sharepoint.com/_layouts/15/throttle.htm"))
+        assert not sp.is_throttle_redirect(resp(302, LOGIN[1]))
+        assert not sp.is_throttle_redirect(resp(302, ""))
+        assert not sp.is_throttle_redirect(resp(200, THROTTLE[1]))

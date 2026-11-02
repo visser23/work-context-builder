@@ -34,6 +34,8 @@ class FakeTenant:
         self.search_queries: list[str] = []
         self.search_status = 200
         self.auth_status: int | None = None
+        self.auth_blips = 0  # next N requests are refused (401), then service resumes
+        self.blip_location: str | None = None  # if set, blips are 302 redirects to it
         self.throttle_once: set[str] = set()
         self.cookies_seen: dict[str, set[str]] = {}
         # Sites (web URLs) where the logged-in user holds "add items" rights.
@@ -101,6 +103,11 @@ class FakeTenant:
         self.cookies_seen.setdefault(host, set()).add(request.headers.get("cookie", ""))
         path = unquote(url.path)
 
+        if self.auth_blips:
+            self.auth_blips -= 1
+            if self.blip_location:
+                return httpx.Response(302, headers={"Location": self.blip_location})
+            return httpx.Response(401)
         if self.auth_status:
             return httpx.Response(self.auth_status)
 

@@ -57,7 +57,8 @@ class FakeLibrary:
     def fail(self, fragment: str, *outcomes: Any) -> None:
         """Queue outcomes for requests whose path contains ``fragment``.
 
-        An int is an HTTP status, ``"reset"`` raises a connection reset.
+        An int is an HTTP status, ``(status, headers)`` adds response headers, ``"reset"`` raises a
+        connection reset.
         """
         self.faults[fragment].extend(outcomes)
 
@@ -74,6 +75,8 @@ class FakeLibrary:
                 outcome = queue.popleft()
                 if outcome == "reset":
                     raise httpx.ReadError("Connection reset by peer", request=request)
+                if isinstance(outcome, tuple):  # (status, headers)
+                    return httpx.Response(int(outcome[0]), headers=outcome[1])
                 return httpx.Response(int(outcome), headers={"Retry-After": "1"})
 
         if path.endswith("/_api/web/title"):

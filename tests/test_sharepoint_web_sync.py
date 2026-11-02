@@ -410,3 +410,234 @@ class TestRelativePath:
     def test_foreign_path_keeps_full_path_without_leading_slash(self):
         source = make_source()
         assert source.relative_path("/sites/other/Docs/a.docx") == "sites/other/Docs/a.docx"
+
+
+class TestDownloadRejectionDoesNotKillTheRun:
+    """Regression (Nov 2026): "SharePoint kept rejecting the session ... Run: workctx-relogin".
+
+    A download answered 401/3xx was treated as a dead login with no sanity probe. The
+    "refresh" rebuilt the client from the *same* stored cookies (no browser opened), the
+    next attempt failed the same way, and the 3-refreshes-per-run budget was gone within
+    seconds - so every remaining file failed and the user was told to log in again although
+    they were already logged in (the same cookies download fine minutes later).
+    """
+
+    def _no_browser(self, monkeypatch):
+        def boom(*a, **k):
+            raise AssertionError("no browser refresh expected")
+
+        monkeypatch.setattr(sw, "keepalive_and_extract", boom)
+
+    def test_one_rejected_download_is_retried_without_a_browser(self, sp_library, monkeypatch):
+        url = sp_library.add("doc.docx", content=b"payload")
+        sp_library.fail("GetFileByServerRelativeUrl", 401)
+        self._no_browser(monkeypatch)
+        source = make_source()
+
+        path = source.download_file(url)
+
+        assert path is not None and path.read_bytes() == b"payload"
+        assert source._session_refreshes == 0
+        path.unlink()
+
+    def test_redirects_do_not_consume_the_refresh_budget(self, sp_library, monkeypatch):
+        url = sp_library.add("doc.docx", content=b"payload")
+        sp_library.fail("GetFileByServerRelativeUrl", 302, 302, 302)
+        calls = []
+        monkeypatch.setattr(
+            sw, "keepalive_and_extract", lambda *a, **k: calls.append(k) or {"rtFa": "n"}
+        )
+        source = make_source()
+
+        path = source.download_file(url)
+
+        assert path is not None
+        assert source._session_refreshes == 0
+        path.unlink()
+
+    def test_repeated_rejection_with_a_valid_probe_forces_one_fresh_login(
+        self, sp_library, monkeypatch
+    ):
+        """The cheap probe can pass while downloads are refused, so re-issue the cookies."""
+        url = sp_library.add("doc.docx", content=b"payload")
+        sp_library.fail("GetFileByServerRelativeUrl", 401, 401)
+        calls = []
+        monkeypatch.setattr(
+            sw, "keepalive_and_extract", lambda *a, **k: calls.append(k) or {"rtFa": "n"}
+        )
+
+        path = make_source().download_file(url)
+
+        assert path is not None
+        assert calls == [{"fresh": True}]
+        path.unlink()
+
+    def test_a_persistently_rejected_file_fails_alone_and_the_run_carries_on(
+        self, sp_library, monkeypatch
+    ):
+        bad = sp_library.add("locked.docx", content=b"x")
+        good = sp_library.add("fine.docx", content=b"ok")
+        sp_library.fail("locked.docx", *([401] * 40))
+        monkeypatch.setattr(sw, "keepalive_and_extract", lambda *a, **k: {"rtFa": "n"})
+        source = make_source()
+
+        assert source.download_file(bad) is None  # no SessionExpiredError
+        path = source.download_file(good)
+
+        assert path is not None and path.read_bytes() == b"ok"
+        path.unlink()
+
+    def test_forced_logins_are_rationed(self, sp_library, monkeypatch):
+        """A broken endpoint must not reopen the browser for every file."""
+        urls = [sp_library.add(f"f{i}.docx") for i in range(6)]
+        sp_library.fail("GetFileByServerRelativeUrl", *([401] * 200))
+        calls = []
+        monkeypatch.setattr(
+            sw, "keepalive_and_extract", lambda *a, **k: calls.append(k) or {"rtFa": "n"}
+        )
+        source = make_source()
+
+        for url in urls:
+            source.download_file(url)
+
+        assert 1 <= len(calls) <= sw.MAX_FORCED_REFRESHES
+
+    def test_a_relogin_in_another_process_is_picked_up_without_a_browser(
+        self, sp_library, monkeypatch
+    ):
+        """`workctx-relogin` stores new cookies; the running daemon must start using them."""
+        url = sp_library.add("doc.docx", content=b"payload")
+        sp_library.fail("GetFileByServerRelativeUrl", 401)
+        stored = {"rtFa": "old", "FedAuth": "old"}
+        monkeypatch.setattr(sw, "load_cookies", lambda ref: dict(stored))
+        self._no_browser(monkeypatch)
+        source = make_source()
+        source._get_client()  # built from the old cookies
+        stored.update(rtFa="new", FedAuth="new")  # user logs in again elsewhere
+
+        path = source.download_file(url)
+
+        assert path is not None
+        assert "new" in source._client.headers["Cookie"]
+        path.unlink()
+
+    def test_a_genuinely_dead_session_still_refreshes_through_the_browser(
+        self, sp_library, monkeypatch
+    ):
+        url = sp_library.add("doc.docx", content=b"payload")
+        sp_library.fail("GetFileByServerRelativeUrl", 401)
+        ok, dead = sw.CookieStatus.VALID, sw.CookieStatus.REJECTED
+        statuses = iter([ok, dead, dead])  # client built, probe says dead, refresh re-checks
+        monkeypatch.setattr(
+            sw, "cookie_status", lambda *a, **k: next(statuses, sw.CookieStatus.VALID)
+        )
+        refreshed = []
+        monkeypatch.setattr(
+            sw, "keepalive_and_extract", lambda *a, **k: refreshed.append(1) or {"rtFa": "n"}
+        )
+
+        path = make_source().download_file(url)
+
+        assert path is not None and refreshed
+        path.unlink()
+
+    def test_the_budget_is_for_consecutive_failures_not_the_whole_run(
+        self, sp_library, monkeypatch
+    ):
+        """Three recoverable blips spread over a long run must not end the run."""
+        sp_library.add("a.docx")
+        sp_library.fail("/Files", 401)
+        monkeypatch.setattr(sw, "cookie_status", lambda *a, **k: sw.CookieStatus.REJECTED)
+        monkeypatch.setattr(sw, "load_cookies", lambda ref: None)
+        monkeypatch.setattr(sw, "keepalive_and_extract", lambda *a, **k: {"rtFa": "n"})
+        source = make_source()
+        source._session_refreshes = sw.MAX_SESSION_REFRESHES - 1
+
+        source.get_current_ids()  # lists the library: one rejection, one refresh, success
+
+        assert source._session_refreshes == 0
+
+    def test_the_log_says_what_sharepoint_answered(self, sp_library, monkeypatch, caplog):
+        url = sp_library.add("doc.docx")
+        sp_library.fail("GetFileByServerRelativeUrl", 302)
+        self._no_browser(monkeypatch)
+
+        with caplog.at_level("WARNING", logger="workctx.sources.sharepoint_web"):
+            path = make_source().download_file(url)
+
+        assert path is not None
+        assert any("HTTP 302" in r.getMessage() for r in caplog.records)
+        path.unlink()
+
+
+THROTTLED = (302, {"Location": "/_layouts/15/Throttle.htm?returnUrl=%2Fsites%2Fx"})
+
+
+class TestSharePointThrottling:
+    """SharePoint rate-limits by redirecting to Throttle.htm: wait, never "re-login"."""
+
+    def _hostile_auth(self, monkeypatch):
+        """Session probe says rejected and any browser refresh is a failure."""
+        monkeypatch.setattr(sw, "cookie_status", lambda *a, **k: sw.CookieStatus.REJECTED)
+
+        def boom(*a, **k):
+            raise AssertionError("throttling must never trigger a login refresh")
+
+        monkeypatch.setattr(sw, "keepalive_and_extract", boom)
+
+    def test_throttled_download_waits_and_retries(self, sp_library, monkeypatch):
+        url = sp_library.add("doc.docx", content=b"payload")
+        sp_library.fail("GetFileByServerRelativeUrl", THROTTLED, THROTTLED)
+        source = make_source()
+        source._get_client()  # built while the session was fine
+        self._hostile_auth(monkeypatch)
+
+        path = source.download_file(url)
+
+        assert path is not None and path.read_bytes() == b"payload"
+        assert source._session_refreshes == 0
+        path.unlink()
+
+    def test_throttled_listing_waits_and_retries(self, sp_library, db, monkeypatch):
+        sp_library.add("one.docx")
+        sp_library.fail("/Files", THROTTLED, THROTTLED)
+        source = make_source()
+        source._get_client()
+        self._hostile_auth(monkeypatch)
+
+        assert by_action(source.discover_changes(db, None)) == {ChangeAction.ADD: ["one.docx"]}
+
+    def test_every_worker_waits_while_sharepoint_is_throttling(self, sp_library, monkeypatch):
+        url = sp_library.add("doc.docx")
+        sleeps: list[float] = []
+        monkeypatch.setattr(sw.time, "sleep", sleeps.append)
+        sp_library.fail("GetFileByServerRelativeUrl", THROTTLED)
+        source = make_source()
+
+        source.download_file(url)
+        sleeps.clear()
+        source.download_file(url)  # a different worker, moments later
+
+        assert sleeps and max(sleeps) > 1, "a throttled run must slow every request, not one"
+
+    def test_throttle_waits_grow_and_are_capped(self, sp_library):
+        waits = [sw._throttle_wait(n) for n in range(1, 12)]
+
+        assert waits == sorted(waits)
+        assert waits[0] >= 10
+        assert max(waits) <= sw.MAX_THROTTLE_WAIT_SECONDS
+
+    def test_a_throttled_file_fails_alone_and_is_retried_next_run(self, sp_library, monkeypatch):
+        bad = sp_library.add("a.docx")
+        good = sp_library.add("b.docx", content=b"ok")
+        sp_library.fail("a.docx", *([THROTTLED] * 40))
+        source = make_source()
+        source._get_client()
+        self._hostile_auth(monkeypatch)
+
+        assert source.download_file(bad) is None
+        sp_library.faults.clear()
+        path = source.download_file(good)
+
+        assert path is not None and path.read_bytes() == b"ok"
+        path.unlink()

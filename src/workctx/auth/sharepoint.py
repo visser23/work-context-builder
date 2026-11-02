@@ -137,8 +137,13 @@ def keepalive_and_extract(
     timeout_ms: int = 60_000,
     sso_wait_seconds: float = SSO_WAIT_SECONDS,
     poll_interval: float = 1.0,
+    fresh: bool = False,
 ) -> dict[str, str]:
     """Open headless browser with persisted profile to refresh session cookies.
+
+    ``fresh=True`` first drops the profile's SharePoint cookies so SharePoint has to send
+    the browser through the identity provider again and issue new ones. Use it when the
+    existing cookies pass a probe but are refused for real work.
 
     The browser profile keeps *persistent* rtFa/FedAuth cookies (days of life)
     and a long-lived identity-provider cookie, but SharePoint invalidates the
@@ -164,8 +169,7 @@ def keepalive_and_extract(
     profile_dir = get_profile_dir(source_name)
     if not (profile_dir / "Default").exists() and not any(profile_dir.iterdir()):
         raise SessionExpiredError(
-            f"No browser profile found for '{source_name}'. "
-            f"Run: {relogin_hint(source_name)}"
+            f"No browser profile found for '{source_name}'. Run: {relogin_hint(source_name)}"
         )
 
     started = time.monotonic()
@@ -185,6 +189,8 @@ def keepalive_and_extract(
             args=["--disable-blink-features=AutomationControlled"],
         )
         try:
+            if fresh:
+                _clear_sp_cookies(context, site_url)
             page = context.new_page()
             try:
                 page.goto(site_url, wait_until="domcontentloaded", timeout=timeout_ms)
@@ -222,6 +228,13 @@ def keepalive_and_extract(
         time.monotonic() - started,
     )
     return cookies
+
+
+def _clear_sp_cookies(context: BrowserContext, site_url: str) -> None:
+    """Remove rtFa/FedAuth for the site's host from the browser profile."""
+    host = urlparse(site_url).hostname or ""
+    for name in sorted(SP_COOKIE_NAMES):
+        context.clear_cookies(name=name, domain=host)
 
 
 def _wait_for_valid_cookies(
@@ -329,6 +342,18 @@ PROBE_ATTEMPTS = 3
 PROBE_RETRY_SECONDS = 3.0
 
 
+def is_throttle_redirect(resp: Any) -> bool:
+    """True if SharePoint answered with its rate-limit page (``/_layouts/15/Throttle.htm``).
+
+    SharePoint throttles by *redirecting*, which looks exactly like the bounce to the login
+    page. Treating it as an expired session made rate limiting produce "please log in again"
+    although the login was fine.
+    """
+    if not 300 <= resp.status_code < 400:
+        return False
+    return "throttle.htm" in urlparse(resp.headers.get("location", "")).path.lower()
+
+
 def cookie_status(
     site_url: str,
     cookies: dict[str, str],
@@ -371,15 +396,23 @@ def cookie_status(
             code = resp.status_code
             if code == 200:
                 return CookieStatus.VALID
-            if code in (401, 403) or 300 <= code < 400:
+            if is_throttle_redirect(resp):
+                logger.info(
+                    "Cookie probe for %s was throttled by SharePoint (attempt %d/%d)",
+                    _safe_url(site_url),
+                    attempt,
+                    attempts,
+                )
+            elif code in (401, 403) or 300 <= code < 400:
                 return CookieStatus.REJECTED
-            logger.info(
-                "Cookie probe for %s got HTTP %d (attempt %d/%d)",
-                _safe_url(site_url),
-                code,
-                attempt,
-                attempts,
-            )
+            else:
+                logger.info(
+                    "Cookie probe for %s got HTTP %d (attempt %d/%d)",
+                    _safe_url(site_url),
+                    code,
+                    attempt,
+                    attempts,
+                )
         if attempt < attempts:
             time.sleep(retry_delay * attempt)
     return CookieStatus.UNREACHABLE
@@ -429,9 +462,7 @@ def _extract_sp_cookies(context: BrowserContext, site_url: str) -> dict[str, str
     return sp_cookies
 
 
-def _persist_cookies(
-    secret_ref: str, cookies: dict[str, str], site_url: str
-) -> None:
+def _persist_cookies(secret_ref: str, cookies: dict[str, str], site_url: str) -> None:
     data = {
         "cookies": cookies,
         "site_url": site_url,
