@@ -284,7 +284,7 @@ class SlackAdapter(Source):
             return self._discover(stored, full=full, force_session=False)
         except SlackAuthError:
             logger.info("Slack/%s: credentials rejected, refreshing the browser session", self.name)
-            webtokens.clear_caches()
+            webtokens.clear_slack_cache()
             for client in list(self._clients.values()):
                 client.close()
             self._clients.clear()

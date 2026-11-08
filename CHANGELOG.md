@@ -3,6 +3,79 @@
 All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.6.0]
+
+### Added
+- **`workctx` works in any shell.** `install-service` now writes a `workctx` launcher (next to
+  `workctx-relogin`) into `~/.local/bin`, for cloud-synced projects (self-contained venv) and
+  for others that have no `workctx` on PATH (`uv run --project ...`). It never overwrites a
+  file it did not generate. Previously only `workctx-relogin` existed, so `workctx sources`
+  was "command not found" outside the repo and the README's examples could not be followed.
+- **`WORKCTX_CONFIG`** environment variable: the config used when `--config` is not given
+  (explicit `--config` wins; then `./workctx.yaml`). The launcher sets it, so every command
+  works from any directory. A missing file is reported with where the path came from.
+- **`workctx auth relogin [NAME] [--force]`**: one command for every browser login
+  (SharePoint, Teams transcripts, email, calendar, Slack). Each is checked silently and a
+  window opens only where a login has lapsed. `workctx-relogin` now runs it (so
+  `workctx-relogin --source my-slack` and `workctx-relogin my-slack` both work). An
+  unknown name lists the sources that can be signed in to.
+
+### Changed
+- `workctx --help` ends with an everyday-commands guide and explains config discovery; `auth`
+  has a real summary; every `--config` option says where its default comes from.
+- README: new "How to run workctx" section, corrected CLI reference and troubleshooting.
+
+## [1.5.1]
+
+### Fixed
+- **Slack sign-in window never closed / never detected the login.** The window started on the
+  workspace sign-in page and, after SSO, stayed on `*.enterprise.slack.com`, but Slack only
+  stores its tokens on `app.slack.com`, so nothing was ever found. The window now starts on the
+  Slack client: a live session is detected immediately; a stale one is sent to the sign-in page
+  once; and when Slack issues a new login cookie the window is carried back to the client so the
+  tokens appear. It never navigates while you are on the identity provider's pages.
+
+### Changed
+- **`workctx auth login-web` only opens windows for sessions that have lapsed.** Each selected
+  source is first checked silently (headless, ~20s at most); a still-valid session prints
+  "already signed in" and no window opens. `--force` opens the window regardless.
+
+## [1.5.0]
+
+### Added
+- **`workctx sources`** lists every configured source (kind, name, login/browser profile,
+  URLs and windows) plus the config file, output and state locations. No secrets are shown.
+
+### Fixed
+- **"Slack login failed" every sync while logged in.** Slack keeps stale `xoxc-` tokens in
+  the browser profile until the page itself notices they are dead, bounces to
+  `/workspace-signin` and wipes them (about 4 seconds). We read the tokens at ~2 seconds,
+  called that a session, and a refresh re-read the same ones, so every call returned
+  `invalid_auth`. The session is now checked with `auth.test`; a refused one falls through to
+  the SSO sign-in (`signin_url`), which renews it silently. Inconclusive checks (rate
+  limiting, network) never discard a session. The lapsed-client wait is capped at 25s before
+  the sign-in page is tried.
+- **`workctx-relogin --source <slack/mail/calendar source>`** said "SharePoint source not
+  found". `auth login-sharepoint` now hands web sources to `auth login-web`, and an unknown
+  name points at `workctx sources`.
+- Refreshing Slack no longer wipes Outlook's record of revoked tokens (`clear_slack_cache`).
+
+## [1.4.9]
+
+### Fixed
+- **Email and calendar failed with "Outlook rejected the browser session token" while you were
+  logged in.** Outlook's continuous access evaluation can revoke a token server-side (HTTP 401
+  `insufficient_claims`) while its cached expiry is still hours away. We took the first token
+  from the browser's cache without checking it, and the "forced refresh" re-read that same
+  revoked token, so every run gave up. Tokens are now probed against Outlook; refused ones are
+  remembered and skipped while the browser (which renews them itself within seconds) produces a
+  working one. A throttled or unreachable probe is treated as inconclusive and never costs a
+  working token. The error now says what Outlook actually answered.
+- **`workctx auth login-web` demanded `--source`.** It is now optional and signs in every
+  mail/calendar/Slack source (sources sharing a profile and URL open the browser once). The
+  interactive sign-in also validates the token instead of declaring success on a revoked one.
+- Hints no longer tell you to run `uv run workctx auth login-web --source <name>`.
+
 ## [1.4.8]
 
 ### Fixed

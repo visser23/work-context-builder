@@ -97,7 +97,9 @@ class OutlookClient:
         self._pause_until = 0.0  # shared back-off: one 429 slows every worker thread
 
     def _default_token(self, force: bool) -> WebToken:
-        return webtokens.get_outlook_token(self._profile, self._mailbox_url, force=force)
+        return webtokens.get_outlook_token(
+            self._profile, self._mailbox_url, force=force, api_base=self._api_base
+        )
 
     # -- plumbing ----------------------------------------------------------------
 
@@ -152,6 +154,7 @@ class OutlookClient:
                 continue
             if resp.status_code == 401 and not refreshed:
                 refreshed = True
+                self._reject_current_token(resp)
                 self._bearer(force=True)
                 continue
             if resp.status_code in (429, 503, 504):
@@ -162,11 +165,29 @@ class OutlookClient:
             break
         assert resp is not None
         if resp.status_code in (401, 301, 302, 303, 307, 308):
+            self._reject_current_token(resp)
             raise WebSessionExpiredError(
-                "Outlook rejected the browser session token. "
-                "Run: uv run workctx auth login-web --source <name>"
+                f"Outlook rejected the browser session token ({self._describe_rejection(resp)}) "
+                "even after the browser renewed it. Run: workctx auth login-web"
             )
         return resp
+
+    @staticmethod
+    def _describe_rejection(resp: httpx.Response) -> str:
+        challenge = str(resp.headers.get("www-authenticate", ""))
+        if "insufficient_claims" in challenge:
+            return f"HTTP {resp.status_code} insufficient_claims: access was revoked server-side"
+        location = urlparse(str(resp.headers.get("location", "")))
+        where = f", redirected to {location.hostname}{location.path}" if location.hostname else ""
+        return f"HTTP {resp.status_code}{where}"
+
+    def _reject_current_token(self, resp: httpx.Response) -> None:
+        """Tell the token layer this token is revoked so a refresh cannot re-read it."""
+        with self._lock:
+            token = self._token
+        if token is not None:
+            logger.info("Outlook refused the session token (%s)", self._describe_rejection(resp))
+            webtokens.mark_outlook_token_rejected(token.value)
 
     def get_json(self, path_or_url: str, params: dict[str, str] | None = None) -> dict[str, Any]:
         """GET and decode a JSON object, re-fetching if the body arrives truncated.

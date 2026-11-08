@@ -32,6 +32,7 @@ Local files ─┘
 
 1. [What It Does](#what-it-does)
 2. [Installation](#installation)
+   - [How to run `workctx`](#how-to-run-workctx)
 3. [Configuration Guide](#configuration-guide)
    - [Am I on Atlassian Cloud or Data Center?](#am-i-on-atlassian-cloud-or-data-center)
    - [Getting an Atlassian API Token (Cloud)](#getting-an-atlassian-api-token-cloud)
@@ -111,6 +112,28 @@ git clone https://github.com/youruser/work-context-builder.git
 cd work-context-builder
 uv sync
 ```
+
+### How to run `workctx`
+
+Every example in this README is written `uv run workctx ...` and that is exactly
+right **inside your clone of the repo** (`uv run` uses the project's own virtual
+environment). In any other directory the bare word `workctx` is *not* on your
+PATH, so `workctx sources` fails with `command not found` until you do one of:
+
+1. **Install the launcher (recommended).** `uv run workctx install-service`
+   puts a `workctx` command and a `workctx-relogin` command in `~/.local/bin/`.
+   They work from any directory and know where your config lives, so
+   `workctx sources`, `workctx status`, `workctx auth relogin` just work.
+   Make sure `~/.local/bin` is on your PATH (add
+   `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc`, then open a new terminal).
+   Re-run `install-service` after updating the source to refresh it. An existing
+   `workctx` that workctx did not create is never overwritten.
+2. **Stay in the repo** and keep typing `uv run workctx ...`.
+3. **Point at a config explicitly**, from anywhere: `--config /path/to/workctx.yaml`,
+   or set `WORKCTX_CONFIG=/path/to/workctx.yaml` once (the launcher does this for you).
+
+Lost? `workctx --help` lists the everyday commands; `workctx sources` shows what
+is configured and where the config, output and state live.
 
 **Required for SharePoint browser mode:**
 
@@ -461,7 +484,8 @@ closes the browser. The credentials stay **in memory only** — they are never
 written to disk, the keychain or the logs — and are used for ordinary read-only
 API calls to your own Outlook / Slack host. If the single-sign-on session has
 lapsed the browser signs in silently; if a human is needed, run
-`uv run workctx auth login-web --source <name>` once.
+`workctx auth relogin` (or `workctx-relogin`) once: it checks each login silently and opens a
+window only for the ones that have lapsed.
 
 **Prerequisites:** Playwright (`uv sync --extra playwright && uv run playwright
 install chromium`) and a browser profile that is signed in to the app. The
@@ -641,6 +665,7 @@ uv run workctx install-service
 ```
 
 This sets up a background service that:
+- **Installs `workctx` and `workctx-relogin`** in `~/.local/bin` so the commands work from any directory
 - **Starts automatically** when you log in
 - **Syncs once a day** (picks an opportune time)
 - **Accepts Telegram commands** if configured
@@ -667,8 +692,9 @@ When the project lives on cloud-synced storage, `install-service` automatically:
 1. **Builds a self-contained local venv** — source code is copied (not linked), so
    the daemon runs independently of the cloud filesystem
 2. **Caches the config locally** — no cloud dependency at runtime
-3. **Creates `workctx-relogin`** at `~/.local/bin/` — a wrapper script for
-   SharePoint re-authentication that works even when OneDrive is down
+3. **Creates `workctx` and `workctx-relogin`** at `~/.local/bin/` — launchers that
+   work from any directory and even when OneDrive is down (`workctx-relogin` signs
+   you back in to SharePoint, email, calendar and Slack wherever a login lapsed)
 4. **Clamps output paths** to 380 characters — prevents long SharePoint paths from
    crashing OneDrive (which enforces a 400-char path limit)
 
@@ -711,8 +737,10 @@ Fill in the blanks and the AI will handle the rest.
 
 ## CLI Reference
 
-Every command supports `--help` for details. Prefix with `uv run` when
-running from the repo directory.
+Every command supports `--help` for details. Prefix with `uv run` when running
+from the repo directory, or use the bare `workctx` launcher that `install-service`
+creates (see [How to run `workctx`](#how-to-run-workctx)). The config is `--config FILE`,
+else `$WORKCTX_CONFIG`, else `./workctx.yaml`.
 
 | Command | What it does |
 |---|---|
@@ -721,6 +749,7 @@ running from the repo directory.
 | `workctx sync` | Incremental sync (only changes since last run) |
 | `workctx sync --full` | Full sync (reprocesses everything) |
 | `workctx sync --source <name>` | Sync only the named source(s); repeat the flag for several |
+| `workctx sources` | Lists configured sources, their logins/browser profiles and where the config, output and state live |
 | `workctx status` | Shows per-source sync times and object counts |
 | `workctx search "query"` | Full-text search across the entire corpus |
 | `workctx daemon` | Run the daemon in the foreground (for debugging) |
@@ -729,8 +758,9 @@ running from the repo directory.
 | `workctx service-status` | Check if the daemon is running |
 | `workctx auth set <ref>` | Store a secret (token, password, etc.) |
 | `workctx auth remove <ref>` | Delete a stored secret |
-| `workctx auth login-sharepoint --source <name>` | Browser login for SharePoint cookie capture |
-| `workctx auth login-web --source <name>` | Visible browser sign-in for an email, calendar or Slack source (rarely needed) |
+| `workctx auth relogin [NAME] [--force]` | **Start here when a login lapses.** Checks every browser login (SharePoint, Teams transcripts, email, calendar, Slack) silently and opens a window only for those that need it; `NAME` limits it to one source. Also available as `workctx-relogin` |
+| `workctx auth login-sharepoint --source <name>` | The SharePoint-only sign-in flow (a mail/calendar/Slack name is passed on to `login-web`) |
+| `workctx auth login-web [--source <name>] [--force]` | Checks email, calendar and Slack logins silently and opens a browser window only for ones that have lapsed (`--force` opens regardless; all sources without `--source`) |
 | `workctx reconcile` | Force deletion detection across all sources |
 | `workctx verify` | Check every indexed document still exists on disk (read-only; the next sync re-fetches anything missing) |
 | `workctx reindex` | Rebuild the full-text search index |
@@ -868,12 +898,14 @@ to each source, and reports exactly what's wrong.
 | `SharePoint session expired` | The automatic headless refresh already failed, so a human step is needed (password/MFA, or the ~90-day login lapsed). Run `workctx-relogin --source <name>` (works even if OneDrive is down). Falls back to `uv run workctx auth login-sharepoint --config workctx.yaml --source <name>`. Look for `Headless refresh for … found no valid cookies (last page: …)` in `logs/daemon-stderr.log` to see where SSO got stuck |
 | `Sync failed with unhandled exception` + `Resource deadlock avoided` / `os error 60` while writing `_meta/*` | OneDrive File Provider hiccup. Metadata writes now retry automatically; a run-level failure is reported as FAILED (and alerted) rather than "healthy" |
 | Teams transcripts sync finds nothing | Check the meeting was recorded **with transcription**, that `sharepoint_source` points at a logged-in browser-mode source, and run `uv run workctx doctor --verbose` (it probes both SharePoint hosts). Recordings in a departed colleague's locked OneDrive are skipped quietly (HTTP 423) |
-| Email / calendar / Slack: `No Outlook session` / `No Slack session` | The browser profile is signed out and silent SSO could not finish (password/MFA needed). Run `uv run workctx auth login-web --source <name>`, finish signing in, then sync again. For Slack set `signin_url` to your workspace's own sign-in page (e.g. `https://my-org.enterprise.slack.com/`) so it can sign back in by itself |
+| Email / calendar / Slack: `No Outlook session` / `No Slack session` | The browser profile is signed out and silent SSO could not finish (password/MFA needed). Run `workctx auth login-web`, finish signing in, then sync again. (`Outlook rejected the browser session token … insufficient_claims` means Outlook revoked the cached token; the browser normally renews it by itself, and this error only appears if it could not.) (`Slack rejected the saved login (invalid_auth)` is the Slack equivalent.) To see which sources and logins are configured, run `workctx sources`. For Slack set `signin_url` to your workspace's own sign-in page (e.g. `https://my-org.enterprise.slack.com/`) so it can sign back in by itself |
 | Slack shows a browser-not-supported page / nothing is found | Update Playwright's Chromium (`uv run playwright install chromium`). On Enterprise Grid make sure `client_url` is the URL you use in your browser; the org-level token cannot read messages, so the tool reads each workspace you belong to |
 | `Executable doesn't exist at .../ms-playwright/...` | Chromium was deleted (e.g. by a cache cleaner). It is re-installed automatically on the next refresh; or run `uv run playwright install chromium`. `uv run workctx doctor` shows the expected location |
 | `Playwright not installed` | Run `uv sync --extra playwright && uv run playwright install chromium` |
 | The output folder holds far fewer files than the index/`PROJECT_BRIEF.md` lists | The cloud client (OneDrive) reset or emptied the folder. Run `uv run workctx verify` to see the gap; the daemon notices within hours and every sync re-fetches missing documents automatically (large mailboxes take a while: mail is throttled by Microsoft) |
 | `Lock file stale` | Another sync crashed. Delete `run.lock` from the state directory |
+| `zsh: command not found: workctx` | Plain `workctx` only exists after `uv run workctx install-service` (it installs a launcher in `~/.local/bin`; that folder must be on your PATH) - or use `uv run workctx ...` inside the repo clone. See [How to run `workctx`](#how-to-run-workctx) |
+| `Config file not found` / `Multiple YAML configs` | Pass `--config FILE`, set `WORKCTX_CONFIG`, or run from the folder holding `workctx.yaml`. `workctx sources` prints the config in use |
 | `Daemon not running` | Run `uv run workctx service-status`, then `uv run workctx install-service` to reinstall |
 | `Operation timed out (os error 60)` | OneDrive/cloud storage isn't serving files. Restart the OneDrive app. Use `workctx-relogin` (which bypasses OneDrive) instead of `uv run` |
 | OneDrive crashes repeatedly | Long output paths (>400 chars) crash OneDrive. Run `uv run workctx install-service` to rebuild with path clamping, then sync |

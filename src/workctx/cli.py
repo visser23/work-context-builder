@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import click
 from rich.console import Console
@@ -16,11 +18,20 @@ console = Console()
 DEFAULT_CONFIG_GLOB = "*.yaml"
 
 
+CONFIG_ENV_VAR = "WORKCTX_CONFIG"
+CONFIG_HELP = "Path to workctx.yaml (default: $WORKCTX_CONFIG, else ./workctx.yaml)"
+
+
 def _find_config(config: str | None) -> Path:
+    from_env = False
+    if not config:
+        config = os.environ.get(CONFIG_ENV_VAR) or None
+        from_env = config is not None
     if config:
-        p = Path(config)
+        p = Path(config).expanduser()
         if not p.exists():
-            console.print(f"[red]Config file not found: {p}[/red]")
+            origin = f" (from ${CONFIG_ENV_VAR})" if from_env else ""
+            console.print(f"[red]Config file not found: {p}{origin}[/red]")
             sys.exit(1)
         return p
 
@@ -55,7 +66,24 @@ def _find_config(config: str | None) -> Path:
     sys.exit(1)
 
 
-@click.group()
+_QUICK_GUIDE = """
+\b
+Everyday commands:
+  workctx sources            what is configured, and where each source logs in
+  workctx status             last successful sync per source
+  workctx sync               sync now (add --source NAME for just one)
+  workctx doctor             check config, logins and connectivity
+  workctx auth relogin       sign back in wherever a login has lapsed
+  workctx search "query"     search the mirrored corpus
+
+\b
+Which config? --config FILE, else the WORKCTX_CONFIG environment variable (set for you by
+the launcher that `workctx install-service` puts in ~/.local/bin), else ./workctx.yaml.
+Every command has --help.
+"""
+
+
+@click.group(epilog=_QUICK_GUIDE, context_settings={"max_content_width": 110})
 @click.version_option(version=__version__)
 def main() -> None:
     """Work Context Mirror — LLM-friendly mirror of work knowledge."""
@@ -128,8 +156,86 @@ def sync(
         sys.exit(1)
 
 
+def _source_rows(cfg: Any) -> list[tuple[str, str, str, str]]:
+    """(kind, name, login, details) for every configured source. Never any secrets."""
+    src = cfg.sources
+    sp_by_name = {sp.name: sp for sp in src.sharepoint}
+    rows: list[tuple[str, str, str, str]] = []
+    for j in src.jira:
+        rows.append(
+            ("jira", j.name, j.auth.secret_ref or "-", f"{j.base_url}  {','.join(j.projects)}")
+        )
+    for c in src.confluence:
+        rows.append(
+            ("confluence", c.name, c.auth.secret_ref or "-", f"{c.base_url}  {','.join(c.spaces)}")
+        )
+    for sp in src.sharepoint:
+        where = sp.site_url if sp.mode == "browser" else sp.local_path
+        rows.append(("sharepoint", sp.name, f"browser profile {sp.name}", f"{sp.mode}  {where}"))
+    for t in src.transcripts:
+        profile = t.sharepoint_source or t.name
+        rows.append(
+            ("transcripts", t.name, f"browser profile {profile}", "Teams meeting transcripts")
+        )
+    for m in src.mail:
+        rows.append(
+            (
+                "mail",
+                m.name,
+                f"browser profile {m.profile_name(sp_by_name)}",
+                f"{m.mailbox_url}  last {m.since_days} days",
+            )
+        )
+    for cal in src.calendar:
+        rows.append(
+            (
+                "calendar",
+                cal.name,
+                f"browser profile {cal.profile_name(sp_by_name)}",
+                f"{cal.mailbox_url}  -{cal.past_days}/+{cal.future_days} days",
+            )
+        )
+    for sl in src.slack:
+        rows.append(
+            (
+                "slack",
+                sl.name,
+                f"browser profile {sl.profile_name(sp_by_name)}",
+                f"{sl.client_url}  last {sl.since_days} days",
+            )
+        )
+    for lf in src.local_folders:
+        rows.append(("local", lf.name, "-", ", ".join(lf.paths)))
+    return rows
+
+
 @main.command()
-@click.option("--config", "-c", type=str, default=None)
+@click.option("--config", "-c", type=str, default=None, help=CONFIG_HELP)
+def sources(config: str | None) -> None:
+    """List the configured sources, where they log in, and where the config lives."""
+    from workctx.config import load_config
+
+    config_path = _find_config(config)
+    cfg = load_config(config_path)
+    console.print(f"[bold]{cfg.project.name}[/bold]")
+    console.print(f"Config file: {config_path}")
+    console.print(f"Output:      {cfg.output_root_path}")
+    console.print(f"State:       {cfg.state_dir}")
+    console.print()
+    table = Table(show_header=True)
+    for column in ("Kind", "Name", "Login", "Details"):
+        table.add_column(column, overflow="fold")
+    for row in _source_rows(cfg):
+        table.add_row(*row)
+    console.print(table)
+    console.print(
+        "Re-login: [bold]workctx auth login-web --source <name>[/bold] (mail/calendar/Slack) or "
+        "[bold]workctx auth login-sharepoint --source <name>[/bold]"
+    )
+
+
+@main.command()
+@click.option("--config", "-c", type=str, default=None, help=CONFIG_HELP)
 def status(config: str | None) -> None:
     """Display project sync status."""
     from workctx.config import load_config
@@ -172,7 +278,7 @@ def status(config: str | None) -> None:
 
 @main.command()
 @click.argument("query")
-@click.option("--config", "-c", type=str, default=None)
+@click.option("--config", "-c", type=str, default=None, help=CONFIG_HELP)
 @click.option("--limit", "-n", type=int, default=10)
 def search(query: str, config: str | None, limit: int) -> None:
     """Search the normalised corpus."""
@@ -203,7 +309,7 @@ def search(query: str, config: str | None, limit: int) -> None:
 
 
 @main.command()
-@click.option("--config", "-c", type=str, default=None)
+@click.option("--config", "-c", type=str, default=None, help=CONFIG_HELP)
 @click.option("--verbose", "-v", is_flag=True)
 def doctor(config: str | None, verbose: bool) -> None:
     """Validate configuration and environment."""
@@ -214,7 +320,7 @@ def doctor(config: str | None, verbose: bool) -> None:
 
 
 @main.command()
-@click.option("--config", "-c", type=str, default=None)
+@click.option("--config", "-c", type=str, default=None, help=CONFIG_HELP)
 @click.option("--verbose", "-v", is_flag=True)
 @click.option(
     "--force",
@@ -236,7 +342,7 @@ def reconcile(config: str | None, verbose: bool, force: bool) -> None:
 
 
 @main.command()
-@click.option("--config", "-c", type=str, default=None)
+@click.option("--config", "-c", type=str, default=None, help=CONFIG_HELP)
 def reindex(config: str | None) -> None:
     """Rebuild the full-text search index."""
     from workctx.config import load_config
@@ -256,7 +362,7 @@ def reindex(config: str | None) -> None:
 
 
 @main.command()
-@click.option("--config", "-c", type=str, default=None)
+@click.option("--config", "-c", type=str, default=None, help=CONFIG_HELP)
 def verify(config: str | None) -> None:
     """Check that every indexed document still exists on disk (read-only).
 
@@ -299,7 +405,7 @@ def verify(config: str | None) -> None:
 
 
 @main.command()
-@click.option("--config", "-c", type=str, default=None)
+@click.option("--config", "-c", type=str, default=None, help=CONFIG_HELP)
 @click.option("--dry-run", is_flag=True, help="Show what would move without changing anything")
 @click.option("--verbose", "-v", is_flag=True)
 def relayout(config: str | None, dry_run: bool, verbose: bool) -> None:
@@ -346,7 +452,13 @@ def relayout(config: str | None, dry_run: bool, verbose: bool) -> None:
 
 @main.group()
 def auth() -> None:
-    """Manage authentication secrets."""
+    """Sign in (relogin) and manage stored secrets.
+
+    \b
+    workctx auth relogin         sign back in wherever a login has lapsed
+    workctx auth set REF         store a token/password in the OS credential store
+    workctx auth login-sharepoint / login-web   the individual sign-in flows
+    """
 
 
 @auth.command("set")
@@ -371,51 +483,76 @@ def auth_remove(secret_ref: str) -> None:
 
 
 @auth.command("login-web")
-@click.option("--config", "-c", type=str, default=None)
+@click.option("--config", "-c", type=str, default=None, help=CONFIG_HELP)
 @click.option(
     "--source",
     "-s",
     type=str,
-    required=True,
-    help="Name of a mail, calendar or slack source",
+    default=None,
+    help="Name of one mail, calendar or slack source (default: every web source in the config)",
 )
-def auth_login_web(config: str | None, source: str) -> None:
-    """Sign in to Outlook / Slack once in a visible browser (saved in the browser profile).
+@click.option(
+    "--force", is_flag=True, help="Open the sign-in window even if the session is still valid"
+)
+def auth_login_web(config: str | None, source: str | None, force: bool) -> None:
+    """Sign in to Outlook / Slack in a visible browser (saved in the browser profile).
 
-    Usually unnecessary: a profile that already holds your single-sign-on session signs
-    in to Outlook and Slack silently. Run this when a source reports no session.
+    Each selected source is first checked silently; a window opens only for sessions that
+    have actually lapsed (use --force to open regardless). Without --source every
+    mail, calendar and Slack source is checked; sources sharing a browser profile and URL
+    are handled once.
     """
-    from workctx.auth.webtokens import interactive_web_login
+    from workctx.auth.webtokens import check_web_session, interactive_web_login
     from workctx.config import load_config
 
     cfg = load_config(_find_config(config))
     sp_by_name = {sp.name: sp for sp in cfg.sources.sharepoint}
+    targets: list[tuple[str, str, str, Any, str]] = []  # (kind, profile, url, src, name)
+    seen: set[tuple[str, str, str]] = set()
     for kind, group in (
         ("outlook", cfg.sources.mail),
         ("outlook", cfg.sources.calendar),
         ("slack", cfg.sources.slack),
     ):
         for src in group:
-            if src.name != source:
+            if source is not None and src.name != source:
                 continue
             profile = src.profile_name(sp_by_name)
             url = src.client_url if kind == "slack" else src.mailbox_url  # type: ignore[union-attr]
-            if kind == "slack":
-                url = getattr(src, "signin_url", None) or url
-            console.print(f"Opening a browser (profile [bold]{profile}[/bold]) at {url} ...")
-            console.print("Complete sign-in in the window; it closes automatically.")
-            sso_text = getattr(src, "sso_button_text", "Sign in with")
-            if interactive_web_login(profile, url, kind, sso_button_text=sso_text):
-                console.print(f"[green]Signed in. '{source}' can now sync.[/green]")
-                return
-            console.print("[red]Timed out before a usable session was detected.[/red]")
-            sys.exit(1)
-    console.print(f"[red]No mail/calendar/slack source named '{source}' in the config.[/red]")
-    sys.exit(1)
+            if (kind, profile, url) in seen:
+                continue
+            seen.add((kind, profile, url))
+            targets.append((kind, profile, url, src, src.name))
+    if not targets:
+        what = f"named '{source}'" if source else "configured"
+        console.print(f"[red]No mail/calendar/slack source {what} in the config.[/red]")
+        sys.exit(1)
+    failed = False
+    for kind, profile, url, src, name in targets:
+        extra: dict[str, Any] = {"sso_button_text": getattr(src, "sso_button_text", "Sign in with")}
+        if kind == "outlook":
+            extra["api_base"] = src.api_base
+        else:
+            extra["signin_url"] = getattr(src, "signin_url", None)
+        if not force:
+            console.print(f"Checking '{name}' (profile [bold]{profile}[/bold]) ...")
+            if check_web_session(profile, url, kind, **extra):
+                console.print(f"[green]'{name}' is already signed in; nothing to do.[/green]")
+                continue
+            console.print(f"[yellow]'{name}' has lapsed.[/yellow]")
+        console.print(f"Opening a browser (profile [bold]{profile}[/bold]) at {url} ...")
+        console.print("Complete sign-in in the window; it closes automatically.")
+        if interactive_web_login(profile, url, kind, **extra):
+            console.print(f"[green]Signed in. '{name}' can now sync.[/green]")
+        else:
+            console.print(f"[red]Timed out before a usable session was detected ({name}).[/red]")
+            failed = True
+    if failed:
+        sys.exit(1)
 
 
 @auth.command("login-sharepoint")
-@click.option("--config", "-c", type=str, default=None)
+@click.option("--config", "-c", type=str, default=None, help=CONFIG_HELP)
 @click.option(
     "--source",
     "-s",
@@ -425,7 +562,10 @@ def auth_login_web(config: str | None, source: str) -> None:
 )
 @click.option("--headless", is_flag=True, help="Run headless (for testing)")
 def auth_login_sharepoint(config: str | None, source: str, headless: bool) -> None:
-    """Open browser for SharePoint login and capture session cookies."""
+    """Open browser for SharePoint login and capture session cookies.
+
+    Prefer workctx auth relogin: it checks first and covers every browser login.
+    """
     from workctx.auth.sharepoint import interactive_login
     from workctx.config import load_config
 
@@ -453,7 +593,24 @@ def auth_login_sharepoint(config: str | None, source: str, headless: bool) -> No
             secret_ref = tx.auth.secret_ref if tx.auth else None
             break
         else:
+            web_names = {
+                s.name
+                for group in (cfg.sources.mail, cfg.sources.calendar, cfg.sources.slack)
+                for s in group
+            }
+            if source in web_names:
+                # Email, calendar and Slack sign in through the same browser profile but
+                # need their own flow; don't make the user hunt for the right command.
+                console.print(
+                    f"[yellow]'{source}' is not a SharePoint source; using the web sign-in "
+                    f"(workctx auth login-web --source {source}).[/yellow]"
+                )
+                click.get_current_context().invoke(
+                    auth_login_web, config=config, source=source, force=False
+                )
+                return
             console.print(f"[red]SharePoint source '{source}' not found in config.[/red]")
+            console.print("Run 'workctx sources' to list the configured sources.")
             sys.exit(1)
 
     if not site_url:
@@ -479,8 +636,88 @@ def auth_login_sharepoint(config: str | None, source: str, headless: bool) -> No
         sys.exit(1)
 
 
+def _sharepoint_login_ok(site_url: str | None, profile: str, secret_ref: str | None) -> bool:
+    """Silent check: does a session SharePoint accepts exist (or renew by itself)?"""
+    from workctx.auth.sharepoint import get_valid_cookies
+
+    if not (site_url and secret_ref):
+        return False
+    try:
+        get_valid_cookies(site_url, profile, secret_ref)
+    except Exception as exc:  # session expired, no profile, no network ...
+        console.print(f"  [dim]{type(exc).__name__}: {exc}[/dim]")
+        return False
+    return True
+
+
+@auth.command("relogin")
+@click.argument("name", required=False)
+@click.option("--config", "-c", type=str, default=None, help=CONFIG_HELP)
+@click.option("--source", "-s", type=str, default=None, help="Source name (same as NAME)")
+@click.option("--force", is_flag=True, help="Open the sign-in window even if still signed in")
+def auth_relogin(name: str | None, config: str | None, source: str | None, force: bool) -> None:
+    """Sign back in wherever a login has lapsed.
+
+    Works for every browser-login source: SharePoint, Teams transcripts, email, calendar
+    and Slack. Each is checked silently first and a window opens only for logins that have
+    really lapsed (--force opens regardless). Give a source NAME (see
+    workctx sources) to handle just that one.
+    """
+    from workctx.config import load_config
+
+    wanted = source or name
+    cfg = load_config(_find_config(config))
+    src = cfg.sources
+    sp_sources = [s for s in src.sharepoint if s.mode == "browser"]
+    own_login_transcripts = [t for t in src.transcripts if not t.sharepoint_source]
+    web_names = {s.name for group in (src.mail, src.calendar, src.slack) for s in group}
+    # A transcripts source that borrows a SharePoint login is covered by that SharePoint source.
+    borrowed = {t.name: t.sharepoint_source for t in src.transcripts if t.sharepoint_source}
+    if wanted in borrowed:
+        console.print(f"'{wanted}' uses the login of SharePoint source '{borrowed[wanted]}'.")
+        wanted = str(borrowed[wanted])
+    known = [s.name for s in sp_sources] + [t.name for t in own_login_transcripts]
+    known += sorted(web_names) + list(borrowed)
+    if wanted is not None and wanted not in known:
+        console.print(f"[red]No source named '{wanted}' with a browser login.[/red]")
+        console.print("Sources you can sign in to: " + (", ".join(known) or "(none)"))
+        console.print("See them all with: workctx sources")
+        sys.exit(1)
+
+    ctx = click.get_current_context()
+    failed = False
+    sp_targets: list[tuple[str, str | None, str | None]] = [
+        (s.name, s.site_url, s.auth.secret_ref if s.auth else None) for s in sp_sources
+    ] + [(t.name, t.site_url, t.auth.secret_ref if t.auth else None) for t in own_login_transcripts]
+    for sp_name, site_url, secret_ref in sp_targets:
+        if wanted is not None and wanted != sp_name:
+            continue
+        if not force:
+            console.print(f"Checking '{sp_name}' ...")
+            if _sharepoint_login_ok(site_url, sp_name, secret_ref):
+                console.print(f"[green]'{sp_name}' is already signed in; nothing to do.[/green]")
+                continue
+            console.print(f"[yellow]'{sp_name}' has lapsed.[/yellow]")
+        try:
+            ctx.invoke(auth_login_sharepoint, config=config, source=sp_name, headless=False)
+        except SystemExit as exc:
+            failed = failed or exc.code not in (0, None)
+    if wanted is None or wanted in web_names:
+        try:
+            ctx.invoke(
+                auth_login_web,
+                config=config,
+                source=wanted if wanted in web_names else None,
+                force=force,
+            )
+        except SystemExit as exc:
+            failed = failed or exc.code not in (0, None)
+    if failed:
+        sys.exit(1)
+
+
 @main.command("install-schedule")
-@click.option("--config", "-c", type=str, default=None)
+@click.option("--config", "-c", type=str, default=None, help=CONFIG_HELP)
 def install_schedule(config: str | None) -> None:
     """Install a launchd schedule for automatic sync."""
     from workctx.config import load_config
@@ -494,7 +731,7 @@ def install_schedule(config: str | None) -> None:
 
 
 @main.command("remove-schedule")
-@click.option("--config", "-c", type=str, default=None)
+@click.option("--config", "-c", type=str, default=None, help=CONFIG_HELP)
 def remove_schedule(config: str | None) -> None:
     """Remove the launchd schedule."""
     from workctx.config import load_config
@@ -506,7 +743,7 @@ def remove_schedule(config: str | None) -> None:
 
 
 @main.command("schedule-status")
-@click.option("--config", "-c", type=str, default=None)
+@click.option("--config", "-c", type=str, default=None, help=CONFIG_HELP)
 def schedule_status(config: str | None) -> None:
     """Show scheduler status."""
     from workctx.config import load_config
@@ -531,7 +768,7 @@ def init() -> None:
 
 
 @main.command()
-@click.option("--config", "-c", type=str, default=None)
+@click.option("--config", "-c", type=str, default=None, help=CONFIG_HELP)
 def daemon(config: str | None) -> None:
     """Run as a background daemon (daily sync + Telegram commands)."""
     from workctx.daemon import run_daemon
@@ -543,7 +780,7 @@ def daemon(config: str | None) -> None:
 
 
 @main.command("install-service")
-@click.option("--config", "-c", type=str, default=None)
+@click.option("--config", "-c", type=str, default=None, help=CONFIG_HELP)
 def install_service_cmd(config: str | None) -> None:
     """Install the daemon as a background service (auto-start on login)."""
     from workctx.config import load_config
@@ -558,7 +795,7 @@ def install_service_cmd(config: str | None) -> None:
 
 
 @main.command("remove-service")
-@click.option("--config", "-c", type=str, default=None)
+@click.option("--config", "-c", type=str, default=None, help=CONFIG_HELP)
 def remove_service_cmd(config: str | None) -> None:
     """Remove the background daemon service."""
     from workctx.config import load_config
@@ -570,7 +807,7 @@ def remove_service_cmd(config: str | None) -> None:
 
 
 @main.command("service-status")
-@click.option("--config", "-c", type=str, default=None)
+@click.option("--config", "-c", type=str, default=None, help=CONFIG_HELP)
 def service_status_cmd(config: str | None) -> None:
     """Show background daemon service status."""
     from workctx.config import load_config

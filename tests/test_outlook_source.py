@@ -49,6 +49,19 @@ def test_client_gives_up_when_session_is_really_dead(outlook):
     assert outlook.token_requests == [False, True]
 
 
+def test_client_marks_the_rejected_token_and_explains_the_401(outlook, monkeypatch):
+    from workctx.auth import webtokens
+
+    rejected = []
+    monkeypatch.setattr(webtokens, "mark_outlook_token_rejected", rejected.append)
+    outlook.provider_token = "stale"
+    outlook.always_stale = True
+    client = OutlookClient(profile="p", mailbox_url="https://x", api_base=API)
+    with pytest.raises(WebSessionExpiredError, match="HTTP 401"):
+        client.get("/me")
+    assert rejected and set(rejected) == {"stale"}
+
+
 def test_client_backs_off_on_throttling(outlook):
     outlook.throttle_once = 2
     client = OutlookClient(profile="p", mailbox_url="https://x", api_base=API)
