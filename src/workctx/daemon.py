@@ -56,10 +56,7 @@ def _login_recovery_command(config_path: str, source_name: str) -> str:
     wrapper = Path.home() / ".local" / "bin" / "workctx-relogin"
     if wrapper.exists():
         return f"workctx-relogin --source {source_name}"
-    return (
-        f"cd {Path(config_path).parent} && "
-        f"uv run workctx auth login-sharepoint --source {source_name}"
-    )
+    return f"cd {Path(config_path).parent} && uv run workctx auth relogin --source {source_name}"
 
 
 def _first_line(text: str, limit: int = 200) -> str:

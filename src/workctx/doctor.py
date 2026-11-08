@@ -328,7 +328,7 @@ def _check_sharepoint_browser(sp_config, ok, fail, warn) -> None:
             "uv pip install playwright && playwright install chromium"
         )
 
-    from workctx.auth.sharepoint import get_profile_dir, load_cookies
+    from workctx.auth.sharepoint import get_profile_dir, load_cookies, relogin_hint
 
     secret_ref = sp_config.auth.secret_ref if sp_config.auth else None
     if not secret_ref:
@@ -348,8 +348,7 @@ def _check_sharepoint_browser(sp_config, ok, fail, warn) -> None:
         elif status is CookieStatus.REJECTED:
             warn(
                 "SharePoint rejected the stored session (the daemon refreshes it silently; "
-                f"if that fails run: uv run workctx auth login-sharepoint --source "
-                f"{sp_config.name})"
+                f"if that fails run: {relogin_hint(sp_config.name)})"
             )
         else:
             warn(
@@ -357,10 +356,7 @@ def _check_sharepoint_browser(sp_config, ok, fail, warn) -> None:
                 "this does not mean the login has expired; try again shortly"
             )
     else:
-        warn(
-            "No SharePoint cookies — run: "
-            f"uv run workctx auth login-sharepoint --source {sp_config.name}"
-        )
+        warn(f"No SharePoint cookies — run: {relogin_hint(sp_config.name)}")
 
     profile_dir = get_profile_dir(sp_config.name)
     if any(profile_dir.iterdir()):

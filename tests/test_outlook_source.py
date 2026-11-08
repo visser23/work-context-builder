@@ -44,7 +44,7 @@ def test_client_gives_up_when_session_is_really_dead(outlook):
     outlook.provider_token = "stale"
     outlook.always_stale = True
     client = OutlookClient(profile="p", mailbox_url="https://x", api_base=API)
-    with pytest.raises(WebSessionExpiredError, match="login-web"):
+    with pytest.raises(WebSessionExpiredError, match="relogin"):
         client.get("/me")
     assert outlook.token_requests == [False, True]
 

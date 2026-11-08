@@ -16,6 +16,7 @@ import json
 import logging
 import threading
 import time
+from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -285,6 +286,25 @@ def _wait_for_valid_cookies(
             return {}, last_url
 
 
+def sharepoint_login_step(site_url: str) -> Callable[[Any, Any], dict[str, str] | None]:
+    """Poll step for a browser tab: SharePoint cookies once SharePoint accepts them.
+
+    Mirrors :func:`_wait_for_valid_cookies` (each distinct cookie pair is HTTP-tested once,
+    so stale profile cookies are rejected immediately) for the multi-tab sign-in flow.
+    """
+    tested: dict[str, dict[str, str] | None] = {"last": None}
+
+    def step(page: Any, context: Any) -> dict[str, str] | None:
+        candidate = _extract_sp_cookies(context, site_url)
+        if "rtFa" in candidate and "FedAuth" in candidate and candidate != tested["last"]:
+            tested["last"] = dict(candidate)
+            if _http_test_cookies(site_url, candidate):
+                return candidate
+        return None
+
+    return step
+
+
 def _safe_url(url: str) -> str:
     """Host + path only — login URLs carry tokens in the query string."""
     if not url:
@@ -293,12 +313,18 @@ def _safe_url(url: str) -> str:
     return f"{parsed.hostname or 'unknown'}{parsed.path}"
 
 
-def relogin_hint(source_name: str) -> str:
-    """Best command for a human to run to re-authenticate ``source_name``."""
+def relogin_command(source_name: str | None = None) -> str:
+    """Best command for a human to sign back in (to ``source_name``, or to everything lapsed)."""
+    suffix = f" --source {source_name}" if source_name else ""
     wrapper = Path.home() / ".local" / "bin" / "workctx-relogin"
     if wrapper.exists():
-        return f"workctx-relogin --source {source_name}"
-    return f"uv run workctx auth login-sharepoint --config workctx.yaml --source {source_name}"
+        return f"workctx-relogin{suffix}"
+    return f"uv run workctx auth relogin --config workctx.yaml{suffix}"
+
+
+def relogin_hint(source_name: str) -> str:
+    """Best command for a human to run to re-authenticate ``source_name``."""
+    return relogin_command(source_name)
 
 
 def load_cookies(secret_ref: str) -> dict[str, str] | None:

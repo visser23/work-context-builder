@@ -149,7 +149,7 @@ def test_get_outlook_token_caches_and_force_refreshes(monkeypatch):
 
 def test_get_outlook_token_without_session_raises(monkeypatch):
     monkeypatch.setattr(wt, "_run_in_browser", lambda *a, **k: None)
-    with pytest.raises(wt.WebSessionExpiredError, match="login-web"):
+    with pytest.raises(wt.WebSessionExpiredError, match="relogin"):
         wt.get_outlook_token("prof", "https://outlook.example/mail/")
 
 
@@ -412,7 +412,7 @@ def test_get_slack_session_says_why_when_slack_rejected_everything(monkeypatch):
     monkeypatch.setattr(wt, "_run_in_browser", fake_run)
     with pytest.raises(wt.WebSessionExpiredError, match="rejected") as err:
         wt.get_slack_session("p", "https://app.slack.com/client/E1/")
-    assert "uv run" not in str(err.value) and "login-web" in str(err.value)
+    assert "relogin" in str(err.value)
 
 
 def test_signin_fallback_phase_gets_the_full_wait(monkeypatch):
@@ -549,3 +549,20 @@ def test_check_web_session_is_quick_and_bypasses_the_cache(monkeypatch):
     monkeypatch.setattr(wt, "get_outlook_token", fake)
     wt.check_web_session("p", "https://x/", "outlook")
     assert seen["force"] is True and seen["wait_seconds"] <= 30
+
+
+def test_web_login_step_picks_the_right_step_for_each_kind(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(wt, "_outlook_step", lambda api_base, state: seen.setdefault("o", api_base))
+    monkeypatch.setattr(
+        wt, "_slack_interactive_step", lambda c, s, sso, state: seen.setdefault("i", (c, s))
+    )
+    monkeypatch.setattr(wt, "_slack_step", lambda sso, state: seen.setdefault("p", sso))
+    assert (
+        wt.web_login_step("outlook", "u", api_base="https://api.example/v2")
+        == "https://api.example/v2"
+    )
+    assert wt.web_login_step("slack", CLIENT, signin_url=SIGNIN) == (CLIENT, SIGNIN)
+    assert wt.web_login_step("slack", CLIENT, sso_button_text="Sign in with X") == "Sign in with X"
+    with pytest.raises(ValueError):
+        wt.web_login_step("carrier-pigeon", "u")

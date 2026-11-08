@@ -192,7 +192,7 @@ class TestKeepaliveWaitsForSilentSso:
         with pytest.raises(sp.SessionExpiredError) as exc:
             sp.keepalive_and_extract(SITE, "src", "ref", sso_wait_seconds=0.1, poll_interval=0.01)
         assert "SECRET" not in str(exc.value)
-        assert "workctx-relogin" in str(exc.value) or "login-sharepoint" in str(exc.value)
+        assert "relogin" in str(exc.value)
 
 
 class TestInteractiveLoginValidates:
@@ -440,7 +440,9 @@ class TestThrottleRedirectIsNotAnExpiredLogin:
             return httpx.Response(code, headers={"Location": loc} if loc else {})
 
         assert sp.is_throttle_redirect(resp(302, THROTTLE[1]))
-        assert sp.is_throttle_redirect(resp(307, "https://x.sharepoint.com/_layouts/15/throttle.htm"))
+        assert sp.is_throttle_redirect(
+            resp(307, "https://x.sharepoint.com/_layouts/15/throttle.htm")
+        )
         assert not sp.is_throttle_redirect(resp(302, LOGIN[1]))
         assert not sp.is_throttle_redirect(resp(302, ""))
         assert not sp.is_throttle_redirect(resp(200, THROTTLE[1]))

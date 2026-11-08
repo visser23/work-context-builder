@@ -229,8 +229,7 @@ def sources(config: str | None) -> None:
         table.add_row(*row)
     console.print(table)
     console.print(
-        "Re-login: [bold]workctx auth login-web --source <name>[/bold] (mail/calendar/Slack) or "
-        "[bold]workctx auth login-sharepoint --source <name>[/bold]"
+        "Lapsed login? Run [bold]workctx auth relogin[/bold] (add a source name for just one)."
     )
 
 
@@ -482,6 +481,42 @@ def auth_remove(secret_ref: str) -> None:
     console.print(f"[green]Secret removed: {secret_ref}[/green]")
 
 
+def _web_login_targets(cfg: Any, source: str | None) -> list[tuple[str, str, str, Any, str]]:
+    """Mail/calendar/Slack logins as ``(kind, profile, url, src, name)``.
+
+    ``kind`` is ``"outlook"`` or ``"slack"``. Sources sharing a kind, profile and URL (mail and
+    calendar on one mailbox) appear once. ``source`` limits it to one source name.
+    """
+    sp_by_name = {sp.name: sp for sp in cfg.sources.sharepoint}
+    targets: list[tuple[str, str, str, Any, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for kind, group in (
+        ("outlook", cfg.sources.mail),
+        ("outlook", cfg.sources.calendar),
+        ("slack", cfg.sources.slack),
+    ):
+        for src in group:
+            if source is not None and src.name != source:
+                continue
+            profile = src.profile_name(sp_by_name)
+            url = src.client_url if kind == "slack" else src.mailbox_url
+            if (kind, profile, url) in seen:
+                continue
+            seen.add((kind, profile, url))
+            targets.append((kind, profile, url, src, src.name))
+    return targets
+
+
+def _web_login_extra(kind: str, src: Any) -> dict[str, Any]:
+    """Keyword arguments the web sign-in / check functions take for ``src``."""
+    extra: dict[str, Any] = {"sso_button_text": getattr(src, "sso_button_text", "Sign in with")}
+    if kind == "outlook":
+        extra["api_base"] = src.api_base
+    else:
+        extra["signin_url"] = getattr(src, "signin_url", None)
+    return extra
+
+
 @auth.command("login-web")
 @click.option("--config", "-c", type=str, default=None, help=CONFIG_HELP)
 @click.option(
@@ -506,34 +541,14 @@ def auth_login_web(config: str | None, source: str | None, force: bool) -> None:
     from workctx.config import load_config
 
     cfg = load_config(_find_config(config))
-    sp_by_name = {sp.name: sp for sp in cfg.sources.sharepoint}
-    targets: list[tuple[str, str, str, Any, str]] = []  # (kind, profile, url, src, name)
-    seen: set[tuple[str, str, str]] = set()
-    for kind, group in (
-        ("outlook", cfg.sources.mail),
-        ("outlook", cfg.sources.calendar),
-        ("slack", cfg.sources.slack),
-    ):
-        for src in group:
-            if source is not None and src.name != source:
-                continue
-            profile = src.profile_name(sp_by_name)
-            url = src.client_url if kind == "slack" else src.mailbox_url  # type: ignore[union-attr]
-            if (kind, profile, url) in seen:
-                continue
-            seen.add((kind, profile, url))
-            targets.append((kind, profile, url, src, src.name))
+    targets = _web_login_targets(cfg, source)
     if not targets:
         what = f"named '{source}'" if source else "configured"
         console.print(f"[red]No mail/calendar/slack source {what} in the config.[/red]")
         sys.exit(1)
     failed = False
     for kind, profile, url, src, name in targets:
-        extra: dict[str, Any] = {"sso_button_text": getattr(src, "sso_button_text", "Sign in with")}
-        if kind == "outlook":
-            extra["api_base"] = src.api_base
-        else:
-            extra["signin_url"] = getattr(src, "signin_url", None)
+        extra = _web_login_extra(kind, src)
         if not force:
             console.print(f"Checking '{name}' (profile [bold]{profile}[/bold]) ...")
             if check_web_session(profile, url, kind, **extra):
@@ -586,7 +601,7 @@ def auth_login_sharepoint(config: str | None, source: str, headless: bool) -> No
                 console.print(
                     f"[yellow]'{source}' reuses the login of SharePoint source "
                     f"'{tx.sharepoint_source}'.[/yellow]\n"
-                    f"Run: workctx auth login-sharepoint --source {tx.sharepoint_source}"
+                    f"Run: workctx auth relogin --source {tx.sharepoint_source}"
                 )
                 sys.exit(1)
             site_url = tx.site_url
@@ -650,70 +665,148 @@ def _sharepoint_login_ok(site_url: str | None, profile: str, secret_ref: str | N
     return True
 
 
+def _build_login_tasks(
+    cfg: Any, wanted: str | None, force: bool
+) -> tuple[dict[str, list[Any]], list[str]]:
+    """Silently check every selected browser login; return tabs to open per browser profile.
+
+    Returns ``({profile: [LoginTask, ...]}, already_ok_names)``. With ``force`` nothing is
+    checked and every selected login gets a tab.
+    """
+    from workctx.auth import webtokens as wt
+    from workctx.auth.multilogin import LoginTask
+    from workctx.auth.sharepoint import _persist_cookies, sharepoint_login_step
+
+    src = cfg.sources
+    tasks: dict[str, list[Any]] = {}
+    ok: list[str] = []
+
+    def add(profile: str, task: Any) -> None:
+        tasks.setdefault(profile, []).append(task)
+
+    sp_targets = [
+        (s.name, s.site_url, s.auth.secret_ref if s.auth else None)
+        for s in src.sharepoint
+        if s.mode == "browser"
+    ]
+    sp_targets += [
+        (t.name, t.site_url, t.auth.secret_ref if t.auth else None)
+        for t in src.transcripts
+        if not t.sharepoint_source
+    ]
+    for sp_name, site_url, secret_ref in sp_targets:
+        if wanted is not None and wanted != sp_name:
+            continue
+        if not (site_url and secret_ref):
+            console.print(f"[red]'{sp_name}': site_url / auth.secret_ref not configured.[/red]")
+            continue
+        if not force:
+            console.print(f"Checking '{sp_name}' ...")
+            if _sharepoint_login_ok(site_url, sp_name, secret_ref):
+                ok.append(sp_name)
+                console.print(f"[green]'{sp_name}' is already signed in.[/green]")
+                continue
+            console.print(f"[yellow]'{sp_name}' has lapsed.[/yellow]")
+        add(
+            sp_name,
+            LoginTask(
+                sp_name,
+                "sharepoint",
+                site_url,
+                sharepoint_login_step(site_url),
+                lambda cookies, ref=secret_ref, url=site_url: _persist_cookies(ref, cookies, url),
+            ),
+        )
+
+    for kind, profile, url, web_src, name in _web_login_targets(cfg, wanted):
+        extra = _web_login_extra(kind, web_src)
+        if not force:
+            console.print(f"Checking '{name}' (profile [bold]{profile}[/bold]) ...")
+            if wt.check_web_session(profile, url, kind, **extra):
+                ok.append(name)
+                console.print(f"[green]'{name}' is already signed in.[/green]")
+                continue
+            console.print(f"[yellow]'{name}' has lapsed.[/yellow]")
+        add(profile, LoginTask(name, kind, url, wt.web_login_step(kind, url, **extra)))
+    return tasks, ok
+
+
 @auth.command("relogin")
 @click.argument("name", required=False)
 @click.option("--config", "-c", type=str, default=None, help=CONFIG_HELP)
 @click.option("--source", "-s", type=str, default=None, help="Source name (same as NAME)")
-@click.option("--force", is_flag=True, help="Open the sign-in window even if still signed in")
-def auth_relogin(name: str | None, config: str | None, source: str | None, force: bool) -> None:
-    """Sign back in wherever a login has lapsed.
+@click.option("--all", "all_", is_flag=True, help="Every login (this is also the default)")
+@click.option("--force", is_flag=True, help="Open tabs even for logins that are still valid")
+@click.option(
+    "--timeout",
+    type=float,
+    default=300.0,
+    show_default=True,
+    help="Seconds to wait for you to finish signing in",
+)
+def auth_relogin(
+    name: str | None,
+    config: str | None,
+    source: str | None,
+    all_: bool,
+    force: bool,
+    timeout: float,
+) -> None:
+    """Sign back in wherever a login has lapsed, in one browser window.
 
-    Works for every browser-login source: SharePoint, Teams transcripts, email, calendar
-    and Slack. Each is checked silently first and a window opens only for logins that have
-    really lapsed (--force opens regardless). Give a source NAME (see
-    workctx sources) to handle just that one.
+    Every browser login (SharePoint, Teams transcripts, email, calendar, Slack) is checked
+    silently first. The ones that really need you open as tabs of a single browser window;
+    this terminal ticks each one off as you finish it and the browser closes by itself when
+    the last is done. Give a source NAME (see workctx sources) for just one; --force opens
+    tabs even for logins that are still valid.
     """
+    from workctx.auth.multilogin import run_login_tabs
     from workctx.config import load_config
 
+    if all_ and (name or source):
+        raise click.UsageError("--all cannot be combined with a source name")
     wanted = source or name
     cfg = load_config(_find_config(config))
     src = cfg.sources
-    sp_sources = [s for s in src.sharepoint if s.mode == "browser"]
-    own_login_transcripts = [t for t in src.transcripts if not t.sharepoint_source]
-    web_names = {s.name for group in (src.mail, src.calendar, src.slack) for s in group}
     # A transcripts source that borrows a SharePoint login is covered by that SharePoint source.
     borrowed = {t.name: t.sharepoint_source for t in src.transcripts if t.sharepoint_source}
     if wanted in borrowed:
         console.print(f"'{wanted}' uses the login of SharePoint source '{borrowed[wanted]}'.")
         wanted = str(borrowed[wanted])
-    known = [s.name for s in sp_sources] + [t.name for t in own_login_transcripts]
-    known += sorted(web_names) + list(borrowed)
+    known = [s.name for s in src.sharepoint if s.mode == "browser"]
+    known += [t.name for t in src.transcripts if not t.sharepoint_source]
+    known += [t[4] for t in _web_login_targets(cfg, None)] + list(borrowed)
     if wanted is not None and wanted not in known:
         console.print(f"[red]No source named '{wanted}' with a browser login.[/red]")
         console.print("Sources you can sign in to: " + (", ".join(known) or "(none)"))
         console.print("See them all with: workctx sources")
         sys.exit(1)
 
-    ctx = click.get_current_context()
-    failed = False
-    sp_targets: list[tuple[str, str | None, str | None]] = [
-        (s.name, s.site_url, s.auth.secret_ref if s.auth else None) for s in sp_sources
-    ] + [(t.name, t.site_url, t.auth.secret_ref if t.auth else None) for t in own_login_transcripts]
-    for sp_name, site_url, secret_ref in sp_targets:
-        if wanted is not None and wanted != sp_name:
-            continue
-        if not force:
-            console.print(f"Checking '{sp_name}' ...")
-            if _sharepoint_login_ok(site_url, sp_name, secret_ref):
-                console.print(f"[green]'{sp_name}' is already signed in; nothing to do.[/green]")
-                continue
-            console.print(f"[yellow]'{sp_name}' has lapsed.[/yellow]")
-        try:
-            ctx.invoke(auth_login_sharepoint, config=config, source=sp_name, headless=False)
-        except SystemExit as exc:
-            failed = failed or exc.code not in (0, None)
-    if wanted is None or wanted in web_names:
-        try:
-            ctx.invoke(
-                auth_login_web,
-                config=config,
-                source=wanted if wanted in web_names else None,
-                force=force,
-            )
-        except SystemExit as exc:
-            failed = failed or exc.code not in (0, None)
+    tasks, already_ok = _build_login_tasks(cfg, wanted, force)
+    total = sum(len(group) for group in tasks.values())
+    if total == 0:
+        if already_ok:
+            console.print("[green]Everything is already signed in; nothing to do.[/green]")
+        else:
+            console.print("[yellow]No browser logins are configured.[/yellow]")
+        return
+
+    failed: list[str] = []
+    for profile, group in tasks.items():
+        console.print(
+            f"\nOpening one browser (profile [bold]{profile}[/bold]) with {len(group)} "
+            f"tab{'s' if len(group) != 1 else ''}: {', '.join(t.name for t in group)}"
+        )
+        outcome = run_login_tabs(profile, group, timeout_seconds=timeout, report=console.print)
+        failed += [n for n, done in outcome.items() if not done]
     if failed:
+        console.print(f"\n[red]Not signed in: {', '.join(failed)}[/red]")
+        console.print("Run workctx auth relogin again to retry just those.")
         sys.exit(1)
+    console.print(f"\n[green]All {total} logins complete; the browser is closed.[/green]")
+
+
+auth.add_command(auth_relogin, name="login")
 
 
 @main.command("install-schedule")

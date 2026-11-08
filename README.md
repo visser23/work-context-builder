@@ -484,15 +484,16 @@ closes the browser. The credentials stay **in memory only** — they are never
 written to disk, the keychain or the logs — and are used for ordinary read-only
 API calls to your own Outlook / Slack host. If the single-sign-on session has
 lapsed the browser signs in silently; if a human is needed, run
-`workctx auth relogin` (or `workctx-relogin`) once: it checks each login silently and opens a
-window only for the ones that have lapsed.
+`workctx auth relogin` (or `workctx-relogin`) once: it checks each login silently and opens
+only the ones that have lapsed, as tabs of a single browser window that closes itself when you
+have signed in to them all.
 
 **Prerequisites:** Playwright (`uv sync --extra playwright && uv run playwright
 install chromium`) and a browser profile that is signed in to the app. The
 easiest route is a `mode: browser` SharePoint source (see
 [SharePoint Setup](#sharepoint-setup)) in the same Microsoft account — point
 `sharepoint_source` at it. Otherwise use `profile: <name>` and run
-`workctx auth login-web --source <name>`.
+`workctx auth relogin <name>`.
 
 ```yaml
 sources:
@@ -758,7 +759,7 @@ else `$WORKCTX_CONFIG`, else `./workctx.yaml`.
 | `workctx service-status` | Check if the daemon is running |
 | `workctx auth set <ref>` | Store a secret (token, password, etc.) |
 | `workctx auth remove <ref>` | Delete a stored secret |
-| `workctx auth relogin [NAME] [--force]` | **Start here when a login lapses.** Checks every browser login (SharePoint, Teams transcripts, email, calendar, Slack) silently and opens a window only for those that need it; `NAME` limits it to one source. Also available as `workctx-relogin` |
+| `workctx auth relogin [NAME] [--all] [--force] [--timeout S]` | **Start here when a login lapses.** Silently checks every browser login (SharePoint, Teams transcripts, email, calendar, Slack), then opens the ones that need you as **tabs of one browser window**; the terminal ticks each off and the browser closes itself when the last is done. `NAME` limits it to one source; `--force` opens tabs even for valid logins. Also `workctx auth login`, and `workctx-relogin` |
 | `workctx auth login-sharepoint --source <name>` | The SharePoint-only sign-in flow (a mail/calendar/Slack name is passed on to `login-web`) |
 | `workctx auth login-web [--source <name>] [--force]` | Checks email, calendar and Slack logins silently and opens a browser window only for ones that have lapsed (`--force` opens regardless; all sources without `--source`) |
 | `workctx reconcile` | Force deletion detection across all sources |
@@ -898,7 +899,7 @@ to each source, and reports exactly what's wrong.
 | `SharePoint session expired` | The automatic headless refresh already failed, so a human step is needed (password/MFA, or the ~90-day login lapsed). Run `workctx-relogin --source <name>` (works even if OneDrive is down). Falls back to `uv run workctx auth login-sharepoint --config workctx.yaml --source <name>`. Look for `Headless refresh for … found no valid cookies (last page: …)` in `logs/daemon-stderr.log` to see where SSO got stuck |
 | `Sync failed with unhandled exception` + `Resource deadlock avoided` / `os error 60` while writing `_meta/*` | OneDrive File Provider hiccup. Metadata writes now retry automatically; a run-level failure is reported as FAILED (and alerted) rather than "healthy" |
 | Teams transcripts sync finds nothing | Check the meeting was recorded **with transcription**, that `sharepoint_source` points at a logged-in browser-mode source, and run `uv run workctx doctor --verbose` (it probes both SharePoint hosts). Recordings in a departed colleague's locked OneDrive are skipped quietly (HTTP 423) |
-| Email / calendar / Slack: `No Outlook session` / `No Slack session` | The browser profile is signed out and silent SSO could not finish (password/MFA needed). Run `workctx auth login-web`, finish signing in, then sync again. (`Outlook rejected the browser session token … insufficient_claims` means Outlook revoked the cached token; the browser normally renews it by itself, and this error only appears if it could not.) (`Slack rejected the saved login (invalid_auth)` is the Slack equivalent.) To see which sources and logins are configured, run `workctx sources`. For Slack set `signin_url` to your workspace's own sign-in page (e.g. `https://my-org.enterprise.slack.com/`) so it can sign back in by itself |
+| Email / calendar / Slack: `No Outlook session` / `No Slack session` | The browser profile is signed out and silent SSO could not finish (password/MFA needed). Run `workctx auth relogin`, finish signing in, then sync again. (`Outlook rejected the browser session token … insufficient_claims` means Outlook revoked the cached token; the browser normally renews it by itself, and this error only appears if it could not.) (`Slack rejected the saved login (invalid_auth)` is the Slack equivalent.) To see which sources and logins are configured, run `workctx sources`. For Slack set `signin_url` to your workspace's own sign-in page (e.g. `https://my-org.enterprise.slack.com/`) so it can sign back in by itself |
 | Slack shows a browser-not-supported page / nothing is found | Update Playwright's Chromium (`uv run playwright install chromium`). On Enterprise Grid make sure `client_url` is the URL you use in your browser; the org-level token cannot read messages, so the tool reads each workspace you belong to |
 | `Executable doesn't exist at .../ms-playwright/...` | Chromium was deleted (e.g. by a cache cleaner). It is re-installed automatically on the next refresh; or run `uv run playwright install chromium`. `uv run workctx doctor` shows the expected location |
 | `Playwright not installed` | Run `uv sync --extra playwright && uv run playwright install chromium` |

@@ -21,6 +21,7 @@ from urllib.parse import quote, urlparse
 import httpx
 
 from workctx.auth import webtokens
+from workctx.auth.sharepoint import relogin_command
 from workctx.auth.webtokens import WebSessionExpiredError, WebToken
 from workctx.config import CalendarSource, MailSource, SharePointSource
 from workctx.models import ChangeAction, DiscoveredChange, SourceType, SyncCheckpoint
@@ -168,7 +169,7 @@ class OutlookClient:
             self._reject_current_token(resp)
             raise WebSessionExpiredError(
                 f"Outlook rejected the browser session token ({self._describe_rejection(resp)}) "
-                "even after the browser renewed it. Run: workctx auth login-web"
+                f"even after the browser renewed it. Run: {relogin_command()}"
             )
         return resp
 

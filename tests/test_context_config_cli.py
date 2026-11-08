@@ -393,7 +393,7 @@ def test_config_option_help_says_where_the_default_comes_from():
 
 @pytest.fixture
 def relogin_env(monkeypatch, tmp_path):
-    """A config with a browser SharePoint source, Slack and mail; records what is opened."""
+    """Browser SharePoint + Slack + mail (+ a second-profile calendar). Records browser runs."""
     data = {
         **BASE,
         "sources": {
@@ -406,83 +406,167 @@ def relogin_env(monkeypatch, tmp_path):
                 }
             ],
             "mail": [{"name": "m", "sharepoint_source": "sp"}],
+            "calendar": [
+                {
+                    "name": "cal",
+                    "profile": "other",
+                    "mailbox_url": "https://other.example/mail/",
+                }
+            ],
             "slack": [
                 {
                     "name": "s",
                     "sharepoint_source": "sp",
                     "client_url": "https://app.slack.com/client/E1/",
+                    "signin_url": "https://corp.enterprise.slack.com/",
                 }
             ],
         },
     }
     path = tmp_path / "workctx.yaml"
     path.write_text(yaml.safe_dump(data))
-    opened: list[str] = []
-    state = {"sp_ok": True, "web_ok": True}
+    env = type("Env", (), {})()
+    env.path, env.runs, env.tasks = path, [], []
+    env.sp_ok, env.web_ok, env.tab_result = True, True, True
+    env.checked = []
 
     def fake_sp_cookies(host_url, profile, secret_ref):
-        if not state["sp_ok"]:
+        env.checked.append(("sharepoint", profile))
+        if not env.sp_ok:
             raise RuntimeError("expired")
         return {"rtFa": "x"}
 
+    def fake_check(profile, url, kind, **kw):
+        env.checked.append((kind, profile))
+        return env.web_ok if isinstance(env.web_ok, bool) else env.web_ok.get(profile, True)
+
+    def fake_tabs(profile, tasks, **kw):
+        env.runs.append((profile, [(t.kind, t.name) for t in tasks], kw))
+        env.tasks.extend(tasks)
+        return {t.name: env.tab_result for t in tasks}
+
     monkeypatch.setattr("workctx.auth.sharepoint.get_valid_cookies", fake_sp_cookies)
-    monkeypatch.setattr(
-        "workctx.auth.sharepoint.interactive_login",
-        lambda *a, **k: opened.append("sharepoint") or {"rtFa": "x"},
-    )
-    monkeypatch.setattr(
-        "workctx.auth.webtokens.check_web_session", lambda p, u, kind, **kw: state["web_ok"]
-    )
-    monkeypatch.setattr(
-        "workctx.auth.webtokens.interactive_web_login",
-        lambda p, u, kind, **kw: opened.append(kind) or True,
-    )
-    return path, opened, state
+    monkeypatch.setattr("workctx.auth.webtokens.check_web_session", fake_check)
+    monkeypatch.setattr("workctx.auth.multilogin.run_login_tabs", fake_tabs)
+    return env
 
 
-def relogin(path, *args):
-    return CliRunner().invoke(cli_main, ["auth", "relogin", "--config", str(path), *args])
+def relogin(env, *args, group="relogin"):
+    return CliRunner().invoke(cli_main, ["auth", group, "--config", str(env.path), *args])
 
 
-def test_relogin_with_everything_signed_in_opens_nothing(relogin_env):
-    path, opened, _ = relogin_env
-    outcome = relogin(path)
+def run_summary(env):
+    return [(profile, sorted(names)) for profile, names, _ in env.runs]
+
+
+def test_relogin_with_everything_signed_in_opens_no_browser(relogin_env):
+    outcome = relogin(relogin_env)
     assert outcome.exit_code == 0, outcome.output
-    assert opened == [] and "already signed in" in outcome.output
+    assert relogin_env.runs == [] and "already signed in" in outcome.output
 
 
-def test_relogin_opens_windows_only_where_a_login_lapsed(relogin_env):
-    path, opened, state = relogin_env
-    state["sp_ok"] = False
-    outcome = relogin(path)
+def test_relogin_puts_every_lapsed_login_of_a_profile_in_one_browser(relogin_env):
+    relogin_env.sp_ok = False
+    relogin_env.web_ok = {"sp": False, "other": True}
+    outcome = relogin(relogin_env)
     assert outcome.exit_code == 0, outcome.output
-    assert opened == ["sharepoint"]  # web sessions were still fine
-    state["sp_ok"], state["web_ok"] = True, False
-    opened.clear()
-    relogin(path)
-    assert sorted(opened) == ["outlook", "slack"]
+    # One window for the shared profile holding SharePoint + mail + Slack as three tabs;
+    # the calendar's own profile was fine so it gets none.
+    assert run_summary(relogin_env) == [
+        ("sp", sorted([("sharepoint", "sp"), ("outlook", "m"), ("slack", "s")]))
+    ]
+    assert "3 logins complete" in outcome.output
+
+
+def test_relogin_opens_tabs_only_for_lapsed_logins(relogin_env):
+    relogin_env.web_ok = {"sp": True, "other": False}
+    outcome = relogin(relogin_env)
+    assert outcome.exit_code == 0, outcome.output
+    assert run_summary(relogin_env) == [("other", [("outlook", "cal")])]
+
+
+def test_relogin_uses_a_separate_browser_per_profile(relogin_env):
+    relogin_env.sp_ok = False
+    relogin_env.web_ok = False
+    outcome = relogin(relogin_env)
+    assert outcome.exit_code == 0, outcome.output
+    assert sorted(profile for profile, _ in run_summary(relogin_env)) == ["other", "sp"]
+
+
+def test_all_flag_and_the_login_alias_mean_every_login(relogin_env):
+    relogin_env.sp_ok = False
+    assert relogin(relogin_env, "--all", group="login").exit_code == 0
+    assert run_summary(relogin_env) == [("sp", [("sharepoint", "sp")])]
+
+
+def test_all_flag_conflicts_with_a_name(relogin_env):
+    outcome = relogin(relogin_env, "--all", "sp")
+    assert outcome.exit_code != 0 and not relogin_env.runs
+
+
+def test_tasks_open_the_right_pages(relogin_env):
+    relogin_env.sp_ok = False
+    relogin_env.web_ok = False
+    relogin(relogin_env)
+    urls = {t.name: t.url for t in relogin_env.tasks}
+    assert urls == {
+        "sp": "https://t.sharepoint.example/sites/x",
+        "m": "https://outlook.office.com/mail/",
+        "cal": "https://other.example/mail/",
+        "s": "https://app.slack.com/client/E1/",
+    }
+    assert all(callable(t.step) for t in relogin_env.tasks)
+
+
+def test_sharepoint_tab_stores_the_captured_cookies(relogin_env, monkeypatch):
+    stored = []
+    monkeypatch.setattr(
+        "workctx.auth.sharepoint._persist_cookies", lambda ref, c, url: stored.append((ref, c, url))
+    )
+    relogin_env.sp_ok = False
+    relogin(relogin_env, "sp")
+    task = next(t for t in relogin_env.tasks if t.kind == "sharepoint")
+    task.on_success({"rtFa": "r", "FedAuth": "f"})
+    assert stored == [
+        ("sp-cookies", {"rtFa": "r", "FedAuth": "f"}, "https://t.sharepoint.example/sites/x")
+    ]
 
 
 def test_relogin_by_name_routes_to_the_right_login(relogin_env):
-    path, opened, state = relogin_env
-    state["web_ok"] = False
-    assert relogin(path, "--source", "s").exit_code == 0
-    assert opened == ["slack"]
-    opened.clear()
-    state["sp_ok"] = False
-    assert relogin(path, "sp").exit_code == 0  # bare name works too
-    assert opened == ["sharepoint"]
+    relogin_env.web_ok = False
+    assert relogin(relogin_env, "--source", "s").exit_code == 0
+    assert run_summary(relogin_env) == [("sp", [("slack", "s")])]
+    relogin_env.runs.clear()
+    relogin_env.sp_ok = False
+    assert relogin(relogin_env, "sp").exit_code == 0  # bare name works too
+    assert run_summary(relogin_env) == [("sp", [("sharepoint", "sp")])]
 
 
-def test_relogin_force_opens_even_when_signed_in(relogin_env):
-    path, opened, _ = relogin_env
-    assert relogin(path, "--source", "sp", "--force").exit_code == 0
-    assert opened == ["sharepoint"]
+def test_relogin_force_opens_tabs_even_when_signed_in_and_skips_the_checks(relogin_env):
+    outcome = relogin(relogin_env, "--force")
+    assert outcome.exit_code == 0, outcome.output
+    assert relogin_env.checked == []
+    assert sorted(n for _, names in run_summary(relogin_env) for n in names) == sorted(
+        [("outlook", "cal"), ("outlook", "m"), ("sharepoint", "sp"), ("slack", "s")]
+    )
+
+
+def test_relogin_failure_exits_non_zero_and_names_what_is_left(relogin_env):
+    relogin_env.sp_ok = False
+    relogin_env.tab_result = False
+    outcome = relogin(relogin_env)
+    assert outcome.exit_code == 1
+    assert "Not signed in: sp" in outcome.output
+
+
+def test_relogin_passes_the_timeout_through(relogin_env):
+    relogin_env.sp_ok = False
+    relogin(relogin_env, "--timeout", "42")
+    assert relogin_env.runs[0][2]["timeout_seconds"] == 42
 
 
 def test_relogin_unknown_name_lists_what_exists(relogin_env):
-    path, opened, _ = relogin_env
-    outcome = relogin(path, "--source", "nope")
-    assert outcome.exit_code == 1 and not opened
-    for name in ("sp", "m", "s"):
+    outcome = relogin(relogin_env, "--source", "nope")
+    assert outcome.exit_code == 1 and not relogin_env.runs
+    for name in ("sp", "m", "s", "cal"):
         assert name in outcome.output

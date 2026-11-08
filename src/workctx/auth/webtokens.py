@@ -32,7 +32,13 @@ from urllib.parse import urlparse
 
 import httpx
 
-from workctx.auth.sharepoint import _BROWSER_LOCK, _CHROMIUM_UA, get_profile_dir, relogin_hint
+from workctx.auth.sharepoint import (
+    _BROWSER_LOCK,
+    _CHROMIUM_UA,
+    get_profile_dir,
+    relogin_command,
+    relogin_hint,
+)
 from workctx.browsers import configure_browsers_path, ensure_chromium
 
 logger = logging.getLogger(__name__)
@@ -425,12 +431,12 @@ def get_outlook_token(
                     f"Outlook rejected every token in browser profile '{profile}' and the "
                     f"browser could not renew one in {waited:.0f}s (access was revoked, e.g. "
                     f"by conditional access, and needs a fresh sign-in). "
-                    f"Run: workctx auth login-web"
+                    f"Run: {relogin_command()}"
                 )
             raise WebSessionExpiredError(
                 f"No Outlook session for browser profile '{profile}' after "
                 f"{waited:.0f}s (single sign-on needs a human login). "
-                f"Run: workctx auth login-web"
+                f"Run: {relogin_command()}"
             )
         _outlook_cache[profile] = token
         logger.info("Outlook token acquired for profile %s", profile)
@@ -575,7 +581,7 @@ def get_slack_session(
             raise WebSessionExpiredError(
                 f"{why} for browser profile '{profile}' "
                 "(set 'signin_url' for silent SSO, or log in once). "
-                "Run: workctx auth login-web"
+                f"Run: {relogin_command()}"
             )
         _slack_cache[key] = session
         logger.info("Slack session acquired: %d workspace(s)", len(session.teams))
@@ -646,6 +652,30 @@ def _slack_interactive_step(
     return step
 
 
+def web_login_step(
+    kind: str,
+    url: str,
+    *,
+    signin_url: str | None = None,
+    sso_button_text: str = "Sign in with",
+    api_base: str = OUTLOOK_API_BASE,
+) -> Callable[[Any, Any], Any]:
+    """The poll step that says "this tab now holds a login the service accepts".
+
+    ``kind`` is ``"outlook"`` or ``"slack"`` (for Slack ``url`` is the client URL and
+    ``signin_url`` the workspace sign-in page). Used by the single sign-in window and by the
+    multi-tab flow in :mod:`workctx.auth.multilogin`.
+    """
+    if kind == "outlook":
+        return _outlook_step(api_base, {"rejected": False})
+    if kind == "slack":
+        state = {"rejected": False}
+        if signin_url:
+            return _slack_interactive_step(url, signin_url, sso_button_text, state)
+        return _slack_step(sso_button_text, state)
+    raise ValueError(f"unknown login kind: {kind}")
+
+
 def interactive_web_login(
     profile: str,
     url: str,
@@ -662,17 +692,9 @@ def interactive_web_login(
     ``signin_url`` the workspace sign-in page). Returns ``True`` once credentials that the
     service accepts can be read from the profile.
     """
-    step: Callable[[Any, Any], Any]
-    if kind == "outlook":
-        step = _outlook_step(api_base, {"rejected": False})
-    elif kind == "slack":
-        state = {"rejected": False}
-        if signin_url:
-            step = _slack_interactive_step(url, signin_url, sso_button_text, state)
-        else:
-            step = _slack_step(sso_button_text, state)
-    else:
-        raise ValueError(f"unknown login kind: {kind}")
+    step = web_login_step(
+        kind, url, signin_url=signin_url, sso_button_text=sso_button_text, api_base=api_base
+    )
     return (
         _run_in_browser(
             profile,

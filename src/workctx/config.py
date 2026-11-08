@@ -127,7 +127,7 @@ class BrowserSessionSource(BaseModel):
     (and therefore SSO session) is reused. Recommended."""
     profile: str | None = None
     """Standalone alternative: a browser-profile name. Create it with
-    ``workctx auth login-web --source <name>``."""
+    ``workctx auth relogin <name>``."""
 
     @model_validator(mode="after")
     def _needs_profile(self) -> BrowserSessionSource:

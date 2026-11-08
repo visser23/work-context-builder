@@ -3,6 +3,28 @@
 All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.7.0]
+
+### Added
+- **`workctx auth relogin` opens every lapsed login as a tab of ONE browser window.** Each
+  browser login (SharePoint, Teams transcripts, email, calendar, Slack) is still checked
+  silently first; the ones that need a human open as tabs, the terminal ticks each off as it
+  completes (`✔ name signed in (2/3)`), reports what it is still waiting for every 30s, closes
+  finished tabs, and closes the browser when the last one is done. Logins on different browser
+  profiles get one window per profile. A timeout (`--timeout`, default 300s), closing a tab or
+  closing the window ends the wait cleanly; the exit code is non-zero and the unfinished logins
+  are named. `--all` is accepted (it is the default) and `workctx auth login` is an alias.
+  `--force` opens tabs even for valid logins.
+  (New module `workctx.auth.multilogin`; the same sign-in detection as the single-login flows.)
+
+### Changed
+- `workctx-relogin` (which runs `auth relogin`) therefore no longer opens windows one after
+  another.
+- Every "log in again" message (SharePoint, Outlook, Slack, `doctor`, Telegram alerts, the
+  `workctx sources` footer) now recommends the same command, `workctx-relogin` /
+  `workctx auth relogin`, instead of a mix of `login-web`, `login-sharepoint` and
+  `uv run ... <name>` forms.
+
 ## [1.6.0]
 
 ### Added
